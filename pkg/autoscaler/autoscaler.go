@@ -90,6 +90,7 @@ func (agg *totalAggregation) aggregate(stat Stat) {
 		agg.perPodAggregations[stat.PodName] = current
 	}
 	if stat.LameDuck {
+		// no aggregate for the stat of lameducking pod
 		current.lameduck(stat.Time)
 	} else {
 		current.aggregate(stat.AverageConcurrentRequests)
@@ -114,10 +115,7 @@ func (agg *totalAggregation) observedPods(now time.Time) float64 {
 	if activatorsCount > 0 {
 		discountedPodCount := podCount - float64(activatorsCount)
 		// Report a minimum of 1 pod if the activators are sending metrics.
-		if discountedPodCount < 1.0 {
-			return 1.0
-		}
-		return discountedPodCount
+		return math.Max(1.0, discountedPodCount)
 	}
 	return podCount
 }
@@ -187,22 +185,24 @@ func (agg *perPodAggregation) usageRatio(now time.Time) float64 {
 // Autoscaler stores current state of an instance of an autoscaler
 type Autoscaler struct {
 	*DynamicConfig
-	containerConcurrency v1alpha1.RevisionContainerConcurrencyType
-	stats                map[statKey]Stat
-	statsMutex           sync.Mutex
-	panicking            bool
-	panicTime            *time.Time
-	maxPanicPods         float64
-	reporter             StatsReporter
+	containerConcurrency         v1alpha1.RevisionContainerConcurrencyType
+	stats                        map[statKey]Stat
+	statsMutex                   sync.Mutex
+	panicking                    bool
+	panicTime                    *time.Time
+	maxPanicPods                 float64
+	reporter                     StatsReporter
+	lastRequestTime              *time.Time
 }
 
 // New creates a new instance of autoscaler
 func New(dynamicConfig *DynamicConfig, containerConcurrency v1alpha1.RevisionContainerConcurrencyType, reporter StatsReporter) *Autoscaler {
+	now := time.Now()
 	return &Autoscaler{
-		DynamicConfig:        dynamicConfig,
 		containerConcurrency: containerConcurrency,
 		stats:                make(map[statKey]Stat),
 		reporter:             reporter,
+		lastRequestTime:      &now,
 	}
 }
 
@@ -224,7 +224,7 @@ func (a *Autoscaler) Record(ctx context.Context, stat Stat) {
 }
 
 // Scale calculates the desired scale based on current statistics given the current time.
-func (a *Autoscaler) Scale(ctx context.Context, now time.Time) (int32, bool) {
+func (a *Autoscaler) Scale(ctx context.Context, now time.Time) int32 {
 	logger := logging.FromContext(ctx)
 	a.statsMutex.Lock()
 	defer a.statsMutex.Unlock()
@@ -257,16 +257,39 @@ func (a *Autoscaler) Scale(ctx context.Context, now time.Time) (int32, bool) {
 			if lastStat[stat.PodName].Time.Before(*stat.Time) {
 				lastStat[stat.PodName] = stat
 			}
+			// Update lastRequestTime if the current stat is newer and
+			// actually contains requests
+			if a.lastRequestTime.Before(*stat.Time) && stat.RequestCount > 0 {
+				a.lastRequestTime = stat.Time
+			}
 		} else {
-			// Drop metrics after 60 seconds
+			// Drop metrics after config.StableWindow
 			delete(a.stats, key)
 		}
 	}
 
-	// Do nothing when we have no data.
-	if stableData.observedPods(now) < 1.0 {
-		logger.Debug("No data to scale on.")
-		return 0, false
+	logger.Infof("get user pod stable data in 60s: %v", stableData.perPodAggregations)
+	for k, v := range stableData.perPodAggregations {
+		logger.Infof("key and value: %v:%v", k, v)
+	}
+	for k, v := range lastStat {
+		logger.Infof("last request stat: %v:%v", k, v)
+	}
+	logger.Infof("get activator stable data in 60s: %v", stableData.activatorsContained)
+
+	//// Do nothing when we have no data.
+	//if stableData.observedPods(now) < 1.0 {
+	//	logger.Debug("No data to scale on.")
+	//	return 0, false
+	//}
+
+	// Scale to zero if the last request is from too long ago
+	// shoule be stableWindow + scaleToZeroGracePeriod, or just control scaleToZeroGracePeriod > stableWindow
+	if a.lastRequestTime.Add(config.StableWindow + config.ScaleToZeroGracePeriod).Before(now) {
+		logger.Debug("Last request is older than scale to zero threshold. Scaling to 0.")
+		rightNow := time.Now()
+		a.lastRequestTime = &rightNow
+		return 0
 	}
 
 	// Log system totals
@@ -278,8 +301,14 @@ func (a *Autoscaler) Scale(ctx context.Context, now time.Time) (int32, bool) {
 	}
 	logger.Debugf("Current QPS: %v  Current concurrent clients: %v", totalCurrentQPS, totalCurrentConcurrency)
 
-	observedStableConcurrencyPerPod := stableData.observedConcurrencyPerPod(now)
-	observedPanicConcurrencyPerPod := panicData.observedConcurrencyPerPod(now)
+	observedStableConcurrencyPerPod := float64(0.0)
+	observedPanicConcurrencyPerPod := float64(0.0)
+	if stableData.observedPods(now) > float64(0.0) {
+		observedStableConcurrencyPerPod = stableData.observedConcurrencyPerPod(now)
+	}
+	if panicData.observedPods(now) > float64(0.0) {
+		observedPanicConcurrencyPerPod = panicData.observedConcurrencyPerPod(now)
+	}
 	// Desired scaling ratio is observed concurrency over desired (stable) concurrency.
 	// Rate limited to within MaxScaleUpRate.
 	desiredStableScalingRatio := a.rateLimited(observedStableConcurrencyPerPod / config.TargetConcurrency(a.containerConcurrency))
@@ -287,16 +316,17 @@ func (a *Autoscaler) Scale(ctx context.Context, now time.Time) (int32, bool) {
 
 	desiredStablePodCount := desiredStableScalingRatio * stableData.observedPods(now)
 	desiredPanicPodCount := desiredPanicScalingRatio * stableData.observedPods(now)
+	logger.Infof("get all stablePodConcurrenty: %v, panicPodCurrency: %v", desiredStableScalingRatio, desiredPanicScalingRatio)
 
 	a.reporter.Report(ObservedPodCountM, float64(stableData.observedPods(now)))
 	a.reporter.Report(ObservedStableConcurrencyM, observedStableConcurrencyPerPod)
 	a.reporter.Report(ObservedPanicConcurrencyM, observedPanicConcurrencyPerPod)
 	a.reporter.Report(TargetConcurrencyM, config.TargetConcurrency(a.containerConcurrency))
 
-	logger.Debugf("STABLE: Observed average %0.3f concurrency over %v seconds over %v samples over %v pods.",
-		observedStableConcurrencyPerPod, config.StableWindow, stableData.probeCount, stableData.observedPods(now))
-	logger.Debugf("PANIC: Observed average %0.3f concurrency over %v seconds over %v samples over %v pods.",
-		observedPanicConcurrencyPerPod, config.PanicWindow, panicData.probeCount, panicData.observedPods(now))
+	logger.Debugf("STABLE: Observed average %0.3f concurrency over %v seconds over %v samples over %v pods. return %v",
+		observedStableConcurrencyPerPod, config.StableWindow, stableData.probeCount, stableData.observedPods(now), desiredStablePodCount)
+	logger.Debugf("PANIC: Observed average %0.3f concurrency over %v seconds over %v samples over %v pods. return %v",
+		observedPanicConcurrencyPerPod, config.PanicWindow, panicData.probeCount, panicData.observedPods(now), desiredPanicPodCount)
 
 	// Stop panicking after the surge has made its way into the stable metric.
 	if a.panicking && a.panicTime.Add(config.StableWindow).Before(now) {
@@ -329,9 +359,8 @@ func (a *Autoscaler) Scale(ctx context.Context, now time.Time) (int32, bool) {
 		logger.Debug("Operating in stable mode.")
 		desiredPodCount = int32(math.Ceil(desiredStablePodCount))
 	}
-
 	a.reporter.Report(DesiredPodCountM, float64(desiredPodCount))
-	return desiredPodCount, true
+	return desiredPodCount
 }
 
 func (a *Autoscaler) rateLimited(desiredRate float64) float64 {
