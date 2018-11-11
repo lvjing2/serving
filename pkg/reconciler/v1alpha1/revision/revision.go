@@ -18,6 +18,7 @@ package revision
 
 import (
 	"context"
+	"github.com/knative/serving/pkg/reconciler/v1alpha1/revision/resources/names"
 	"net/http"
 	"reflect"
 	"strings"
@@ -249,12 +250,11 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 		// This is important because the copy we loaded from the informer's
 		// cache may be stale and we don't want to overwrite a prior update
 		// to status with this stale state.
-	} else {
-		// logger.Infof("Updating Status (-old, +new): %v", cmp.Diff(original, rev))
-		if _, err := c.updateStatus(rev); err != nil {
-			logger.Warn("Failed to update revision status", zap.Error(err))
-			return err
-		}
+	} else if _, err := c.updateStatus(rev); err != nil {
+		logger.Warn("Failed to update revision status", zap.Error(err))
+		c.Recorder.Eventf(rev, corev1.EventTypeWarning, "UpdateFailed",
+			"Failed to update status for Revision %q: %v", rev.Name, err)
+		return err
 	}
 	return err
 }
@@ -342,6 +342,20 @@ func (c *Reconciler) reconcile(ctx context.Context, rev *v1alpha1.Revision) erro
 		return err
 	}
 
+	endpoints, err := c.endpointsLister.Endpoints(rev.Namespace).Get(names.K8sService(rev))
+	if err != nil {
+		logger.Errorf("revision reconcile to get endpoints error: %v", err)
+		rev.Status.MarkActivating("revision get endpoints error", "revision get endpoints error")
+	}
+	logger.Infof("revision reconcile get endpoints: %v", endpoints)
+	if endpoints == nil {
+		rev.Status.MarkActivating("Deploying", "")
+	} else if len(endpoints.Subsets) > 0 {
+		rev.Status.MarkActive()
+	} else {
+		rev.Status.MarkInactive("No endpoints", "No endpoints")
+	}
+
 	bc := rev.Status.GetCondition(v1alpha1.RevisionConditionBuildSucceeded)
 	if bc == nil || bc.Status == corev1.ConditionTrue {
 		// There is no build, or the build completed successfully.
@@ -411,15 +425,13 @@ func (c *Reconciler) updateStatus(desired *v1alpha1.Revision) (*v1alpha1.Revisio
 	if err != nil {
 		return nil, err
 	}
-	// Check if there is anything to update.
-	if !reflect.DeepEqual(rev.Status, desired.Status) {
-		// Don't modify the informers copy
-		existing := rev.DeepCopy()
-		existing.Status = desired.Status
-
-		// TODO: for CRD there's no updatestatus, so use normal update
-		return c.ServingClientSet.ServingV1alpha1().Revisions(desired.Namespace).Update(existing)
-		//	return prClient.UpdateStatus(newRev)
+	// If there's nothing to update, just return.
+	if reflect.DeepEqual(rev.Status, desired.Status) {
+		return rev, nil
 	}
-	return rev, nil
+	// Don't modify the informers copy
+	existing := rev.DeepCopy()
+	existing.Status = desired.Status
+	// TODO: for CRD there's no updatestatus, so use normal update
+	return c.ServingClientSet.ServingV1alpha1().Revisions(desired.Namespace).Update(existing)
 }

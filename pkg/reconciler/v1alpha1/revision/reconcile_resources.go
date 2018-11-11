@@ -24,7 +24,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/knative/pkg/logging"
 	"github.com/knative/pkg/logging/logkey"
-	kpav1alpha1 "github.com/knative/serving/pkg/apis/autoscaling/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/revision/config"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/revision/resources"
@@ -64,7 +63,7 @@ func (c *Reconciler) reconcileDeployment(ctx context.Context, rev *v1alpha1.Revi
 
 	// Now that we have a Deployment, determine whether there is any relevant
 	// status to surface in the Revision.
-	if hasDeploymentTimedOut(deployment) {
+	if hasDeploymentTimedOut(deployment) && !rev.Status.IsActivationRequired() {
 		rev.Status.MarkProgressDeadlineExceeded(fmt.Sprintf(
 			"Unable to create pods for more than %d seconds.", resources.ProgressDeadlineSeconds))
 		c.Recorder.Eventf(rev, corev1.EventTypeNormal, "ProgressDeadlineExceeded",
@@ -95,11 +94,11 @@ func (c *Reconciler) reconcileKPA(ctx context.Context, rev *v1alpha1.Revision) e
 	kpaName := resourcenames.KPA(rev)
 	logger := logging.FromContext(ctx)
 
-	kpa, getKPAErr := c.kpaLister.PodAutoscalers(ns).Get(kpaName)
+	_, getKPAErr := c.kpaLister.PodAutoscalers(ns).Get(kpaName)
 	if apierrs.IsNotFound(getKPAErr) {
 		// KPA does not exist. Create it.
 		var err error
-		kpa, err = c.createKPA(ctx, rev)
+		_, err = c.createKPA(ctx, rev)
 		if err != nil {
 			logger.Errorf("Error creating KPA %q: %v", kpaName, err)
 			return err
@@ -110,18 +109,6 @@ func (c *Reconciler) reconcileKPA(ctx context.Context, rev *v1alpha1.Revision) e
 		return getKPAErr
 	}
 
-	// Reflect the KPA status in our own.
-	cond := kpa.Status.GetCondition(kpav1alpha1.PodAutoscalerConditionReady)
-	switch {
-	case cond == nil:
-		rev.Status.MarkActivating("Deploying", "")
-	case cond.Status == corev1.ConditionUnknown:
-		rev.Status.MarkActivating(cond.Reason, cond.Message)
-	case cond.Status == corev1.ConditionFalse:
-		rev.Status.MarkInactive(cond.Reason, cond.Message)
-	case cond.Status == corev1.ConditionTrue:
-		rev.Status.MarkActive()
-	}
 	return nil
 }
 
@@ -187,7 +174,7 @@ func (c *Reconciler) reconcileService(ctx context.Context, rev *v1alpha1.Revisio
 		// TODO(mattmoor): How to ensure this only fires once?
 		c.Recorder.Eventf(rev, corev1.EventTypeNormal, "RevisionReady",
 			"Revision becomes ready upon endpoint %q becoming ready", serviceName)
-	} else {
+	} else if !rev.Status.IsActivationRequired() {
 		// If the endpoints is NOT ready, then check whether it is taking unreasonably
 		// long to become ready and if so mark our revision as having timed out waiting
 		// for the Service to become ready.

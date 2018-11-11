@@ -23,6 +23,13 @@ import (
 
 	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/logging"
+	"github.com/knative/serving/pkg/apis/autoscaling"
+	kpa "github.com/knative/serving/pkg/apis/autoscaling/v1alpha1"
+	"github.com/knative/serving/pkg/apis/serving"
+	"github.com/knative/serving/pkg/autoscaler"
+	informers "github.com/knative/serving/pkg/client/informers/externalversions/autoscaling/v1alpha1"
+	listers "github.com/knative/serving/pkg/client/listers/autoscaling/v1alpha1"
+	"github.com/knative/serving/pkg/reconciler"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -31,14 +38,6 @@ import (
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-
-	"github.com/knative/serving/pkg/apis/autoscaling"
-	kpa "github.com/knative/serving/pkg/apis/autoscaling/v1alpha1"
-	"github.com/knative/serving/pkg/apis/serving"
-	"github.com/knative/serving/pkg/autoscaler"
-	informers "github.com/knative/serving/pkg/client/informers/externalversions/autoscaling/v1alpha1"
-	listers "github.com/knative/serving/pkg/client/listers/autoscaling/v1alpha1"
-	"github.com/knative/serving/pkg/reconciler"
 )
 
 const (
@@ -158,12 +157,11 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 		// This is important because the copy we loaded from the informer's
 		// cache may be stale and we don't want to overwrite a prior update
 		// to status with this stale state.
-	} else {
-		// logger.Infof("Updating Status (-old, +new): %v", cmp.Diff(original, kpa))
-		if _, err := c.updateStatus(kpa); err != nil {
-			logger.Warn("Failed to update kpa status", zap.Error(err))
-			return err
-		}
+	} else if _, err := c.updateStatus(kpa); err != nil {
+		logger.Warn("Failed to update kpa status", zap.Error(err))
+		c.Recorder.Eventf(kpa, corev1.EventTypeWarning, "UpdateFailed",
+			"Failed to update status for KPA %q: %v", kpa.Name, err)
+		return err
 	}
 	return err
 }
@@ -227,17 +225,17 @@ func (c *Reconciler) reconcile(ctx context.Context, key string, kpa *kpa.PodAuto
 	reporter.Report(autoscaler.ActualPodCountM, float64(got))
 	reporter.Report(autoscaler.RequestedPodCountM, float64(want))
 
-	switch {
-	case want == 0:
-		kpa.Status.MarkInactive("NoTraffic", "The target is not receiving traffic.")
-
-	case got == 0 && want != 0:
-		kpa.Status.MarkActivating(
-			"Queued", "Requests to the target are being buffered as resources are provisioned.")
-
-	case got > 0:
-		kpa.Status.MarkActive()
-	}
+	//switch {
+	//case want == 0:
+	//	kpa.Status.MarkInactive("NoTraffic", "The target is not receiving traffic.")
+	//
+	//case got == 0 && want != 0:
+	//	kpa.Status.MarkActivating(
+	//		"Queued", "Requests to the target are being buffered as resources are provisioned.")
+	//
+	//case got > 0:
+	//	kpa.Status.MarkActive()
+	//}
 
 	return nil
 }
@@ -247,15 +245,14 @@ func (c *Reconciler) updateStatus(desired *kpa.PodAutoscaler) (*kpa.PodAutoscale
 	if err != nil {
 		return nil, err
 	}
-	// Check if there is anything to update.
-	if !reflect.DeepEqual(kpa.Status, desired.Status) {
-		// Don't modify the informers copy
-		existing := kpa.DeepCopy()
-		existing.Status = desired.Status
-
-		// TODO: for CRD there's no updatestatus, so use normal update
-		return c.ServingClientSet.AutoscalingV1alpha1().PodAutoscalers(kpa.Namespace).Update(existing)
-		//	return prClient.UpdateStatus(newKPA)
+	// If there's nothing to update, just return.
+	if reflect.DeepEqual(kpa.Status, desired.Status) {
+		return kpa, nil
 	}
-	return kpa, nil
+	// Don't modify the informers copy
+	existing := kpa.DeepCopy()
+	existing.Status = desired.Status
+
+	// TODO: for CRD there's no updatestatus, so use normal update
+	return c.ServingClientSet.AutoscalingV1alpha1().PodAutoscalers(kpa.Namespace).Update(existing)
 }
