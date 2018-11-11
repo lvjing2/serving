@@ -27,7 +27,7 @@ import (
 
 func TestAutoscaler_NoData_NoAutoscale(t *testing.T) {
 	a := newTestAutoscaler(10.0)
-	a.expectScale(t, time.Now(), 0, false)
+	a.expectScale(t, time.Now(), 0)
 }
 
 func TestAutoscaler_NoDataAtZero_NoAutoscale(t *testing.T) {
@@ -42,9 +42,9 @@ func TestAutoscaler_NoDataAtZero_NoAutoscale(t *testing.T) {
 			podCount:         1,
 		})
 
-	a.expectScale(t, now, 0, true)
+	a.expectScale(t, now, 0)
 	now = now.Add(2 * time.Minute)
-	a.expectScale(t, now, 0, false) // do nothing
+	a.expectScale(t, now, 0) // do nothing
 }
 
 func TestAutoscaler_StableMode_NoChange(t *testing.T) {
@@ -58,7 +58,7 @@ func TestAutoscaler_StableMode_NoChange(t *testing.T) {
 			durationSeconds:  60,
 			podCount:         10,
 		})
-	a.expectScale(t, now, 10, true)
+	a.expectScale(t, now, 10)
 }
 
 func TestAutoscaler_StableMode_SlowIncrease(t *testing.T) {
@@ -72,7 +72,7 @@ func TestAutoscaler_StableMode_SlowIncrease(t *testing.T) {
 			durationSeconds:  60,
 			podCount:         10,
 		})
-	a.expectScale(t, now, 15, true)
+	a.expectScale(t, now, 15)
 }
 
 func TestAutoscaler_StableMode_SlowDecrease(t *testing.T) {
@@ -86,7 +86,7 @@ func TestAutoscaler_StableMode_SlowDecrease(t *testing.T) {
 			durationSeconds:  60,
 			podCount:         10,
 		})
-	a.expectScale(t, now, 15, true)
+	a.expectScale(t, now, 15)
 }
 
 func TestAutoscaler_StableModeLowPodCount_NoChange(t *testing.T) {
@@ -100,7 +100,7 @@ func TestAutoscaler_StableModeLowPodCount_NoChange(t *testing.T) {
 			durationSeconds:  60,
 			podCount:         1,
 		})
-	a.expectScale(t, now, 1, true)
+	a.expectScale(t, now, 1)
 }
 
 func TestAutoscaler_StableModeNoTraffic_ScaleToZero(t *testing.T) {
@@ -115,7 +115,7 @@ func TestAutoscaler_StableModeNoTraffic_ScaleToZero(t *testing.T) {
 			podCount:         1,
 		})
 
-	a.expectScale(t, now, 1, true)
+	a.expectScale(t, now, 1)
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -125,11 +125,11 @@ func TestAutoscaler_StableModeNoTraffic_ScaleToZero(t *testing.T) {
 			durationSeconds:  300, // 5 minutes
 			podCount:         1,
 		})
-	a.expectScale(t, now, 0, true)
+	a.expectScale(t, now, 0)
 
 	// Should not scale to zero again if there is no more traffic.
 	// Note: scale of 1 will be ignored since the autoscaler is not responsible for scaling from 0.
-	a.expectScale(t, now, 0, true)
+	a.expectScale(t, now, 0)
 }
 
 func TestAutoscaler_PanicMode_DoublePodCount(t *testing.T) {
@@ -152,7 +152,7 @@ func TestAutoscaler_PanicMode_DoublePodCount(t *testing.T) {
 			durationSeconds:  6,
 			podCount:         10,
 		})
-	a.expectScale(t, now, 20, true)
+	a.expectScale(t, now, 20)
 }
 
 // QPS is increasing exponentially. Each scaling event bring concurrency
@@ -169,7 +169,7 @@ func TestAutoscaler_PanicModeExponential_TrackAndStablize(t *testing.T) {
 			durationSeconds:  6,
 			podCount:         1,
 		})
-	a.expectScale(t, now, 6, true)
+	a.expectScale(t, now, 6)
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -179,7 +179,7 @@ func TestAutoscaler_PanicModeExponential_TrackAndStablize(t *testing.T) {
 			durationSeconds:  6,
 			podCount:         6,
 		})
-	a.expectScale(t, now, 36, true)
+	a.expectScale(t, now, 36)
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -189,7 +189,7 @@ func TestAutoscaler_PanicModeExponential_TrackAndStablize(t *testing.T) {
 			durationSeconds:  6,
 			podCount:         36,
 		})
-	a.expectScale(t, now, 216, true)
+	a.expectScale(t, now, 216)
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -199,7 +199,7 @@ func TestAutoscaler_PanicModeExponential_TrackAndStablize(t *testing.T) {
 			durationSeconds:  6,
 			podCount:         216,
 		})
-	a.expectScale(t, now, 1296, true)
+	a.expectScale(t, now, 1296)
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -209,7 +209,7 @@ func TestAutoscaler_PanicModeExponential_TrackAndStablize(t *testing.T) {
 			durationSeconds:  6,
 			podCount:         1296,
 		})
-	a.expectScale(t, now, 1296, true)
+	a.expectScale(t, now, 1296)
 }
 
 func TestAutoscaler_PanicThenUnPanic_ScaleDown(t *testing.T) {
@@ -223,7 +223,7 @@ func TestAutoscaler_PanicThenUnPanic_ScaleDown(t *testing.T) {
 			durationSeconds:  60,
 			podCount:         10,
 		})
-	a.expectScale(t, now, 10, true)
+	a.expectScale(t, now, 10)
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -233,7 +233,7 @@ func TestAutoscaler_PanicThenUnPanic_ScaleDown(t *testing.T) {
 			durationSeconds:  6,
 			podCount:         10,
 		})
-	a.expectScale(t, now, 100, true)
+	a.expectScale(t, now, 100)
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -243,7 +243,7 @@ func TestAutoscaler_PanicThenUnPanic_ScaleDown(t *testing.T) {
 			durationSeconds:  30,
 			podCount:         100,
 		})
-	a.expectScale(t, now, 100, true) // still in panic mode--no decrease
+	a.expectScale(t, now, 100) // still in panic mode--no decrease
 	now = a.recordLinearSeries(
 		t,
 		now,
@@ -253,7 +253,7 @@ func TestAutoscaler_PanicThenUnPanic_ScaleDown(t *testing.T) {
 			durationSeconds:  31,
 			podCount:         100,
 		})
-	a.expectScale(t, now, 10, true) // back to stable mode
+	a.expectScale(t, now, 10) // back to stable mode
 }
 
 func TestAutoscaler_NoScaleOnLessThanOnePod(t *testing.T) {
@@ -277,7 +277,7 @@ func TestAutoscaler_NoScaleOnLessThanOnePod(t *testing.T) {
 			podCount:         2,
 			lameduck:         true,
 		})
-	a.expectScale(t, now, 0, false)
+	a.expectScale(t, now, 0)
 }
 
 func TestAutoscaler_LameDuckDoesNotCount(t *testing.T) {
@@ -304,7 +304,7 @@ func TestAutoscaler_LameDuckDoesNotCount(t *testing.T) {
 			podIdOffset:      1,
 			lameduck:         true,
 		})
-	a.expectScale(t, end, 1, true) // 2 pods reporting metrics but one doesn't count
+	a.expectScale(t, end, 1) // 2 pods reporting metrics but one doesn't count
 }
 
 func TestAutoscaler_LameDucksAreAmortized(t *testing.T) {
@@ -328,7 +328,7 @@ func TestAutoscaler_LameDucksAreAmortized(t *testing.T) {
 			podCount:         10,
 			lameduck:         true,
 		})
-	a.expectScale(t, now, 5, true) // 10 pods lameducked half the time count for 5
+	a.expectScale(t, now, 5) // 10 pods lameducked half the time count for 5
 }
 
 func TestAutoscaler_Activator_CausesInstantScale(t *testing.T) {
@@ -342,7 +342,7 @@ func TestAutoscaler_Activator_CausesInstantScale(t *testing.T) {
 		AverageConcurrentRequests: 100.0,
 	})
 
-	a.expectScale(t, now, 10, true)
+	a.expectScale(t, now, 10)
 }
 
 func TestAutoscaler_Activator_MultipleInstancesAreAggregated(t *testing.T) {
@@ -362,7 +362,7 @@ func TestAutoscaler_Activator_MultipleInstancesAreAggregated(t *testing.T) {
 		AverageConcurrentRequests: 50.0,
 	})
 
-	a.expectScale(t, now, 10, true)
+	a.expectScale(t, now, 10)
 }
 
 func TestAutoscaler_Activator_IsIgnored(t *testing.T) {
@@ -378,7 +378,7 @@ func TestAutoscaler_Activator_IsIgnored(t *testing.T) {
 			podCount:         10,
 		})
 
-	a.expectScale(t, now, 10, true)
+	a.expectScale(t, now, 10)
 
 	now = a.recordMetric(t, Stat{
 		Time:                      &now,
@@ -395,7 +395,7 @@ func TestAutoscaler_Activator_IsIgnored(t *testing.T) {
 
 	// Scale should not change as the activator metric should
 	// be ignored
-	a.expectScale(t, now, 10, true)
+	a.expectScale(t, now, 10)
 }
 
 // Autoscaler should drop data after 60 seconds.
@@ -410,12 +410,12 @@ func TestAutoscaler_Stats_TrimAfterStableWindow(t *testing.T) {
 			durationSeconds:  60,
 			podCount:         1,
 		})
-	a.expectScale(t, now, 1, true)
+	a.expectScale(t, now, 1)
 	if len(a.stats) != 60 {
 		t.Errorf("Unexpected stat count. Expected 60. Got %v.", len(a.stats))
 	}
 	now = now.Add(time.Minute)
-	a.expectScale(t, now, 0, false)
+	a.expectScale(t, now, 0)
 	if len(a.stats) != 0 {
 		t.Errorf("Unexpected stat count. Expected 0. Got %v.", len(a.stats))
 	}
@@ -434,7 +434,7 @@ func TestAutoscaler_Stats_DenyNoTime(t *testing.T) {
 	if len(a.stats) != 0 {
 		t.Errorf("Unexpected stat count. Expected 0. Got %v.", len(a.stats))
 	}
-	a.expectScale(t, time.Now(), 0, false)
+	a.expectScale(t, time.Now(), 0)
 }
 
 func TestAutoscaler_RateLimit_ScaleUp(t *testing.T) {
@@ -450,7 +450,7 @@ func TestAutoscaler_RateLimit_ScaleUp(t *testing.T) {
 		})
 
 	// Need 100 pods but only scale x10
-	a.expectScale(t, now, 10, true)
+	a.expectScale(t, now, 10)
 
 	now = a.recordLinearSeries(
 		t,
@@ -463,7 +463,7 @@ func TestAutoscaler_RateLimit_ScaleUp(t *testing.T) {
 		})
 
 	// Scale x10 again
-	a.expectScale(t, now, 100, true)
+	a.expectScale(t, now, 100)
 }
 
 func TestAutoscaler_UpdateTarget(t *testing.T) {
@@ -555,12 +555,9 @@ func (a *Autoscaler) recordMetric(test *testing.T, stat Stat) time.Time {
 	return *stat.Time
 }
 
-func (a *Autoscaler) expectScale(t *testing.T, now time.Time, expectScale int32, expectOk bool) {
+func (a *Autoscaler) expectScale(t *testing.T, now time.Time, expectScale int32) {
 	t.Helper()
-	scale, ok := a.Scale(TestContextWithLogger(t), now)
-	if ok != expectOk {
-		t.Errorf("Unexpected autoscale decision. Expected %v. Got %v.", expectOk, ok)
-	}
+	scale := a.Scale(TestContextWithLogger(t), now)
 	if scale != expectScale {
 		t.Errorf("Unexpected scale. Expected %v. Got %v.", expectScale, scale)
 	}
