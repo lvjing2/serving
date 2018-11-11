@@ -64,6 +64,14 @@ type scalerRunner struct {
 	latestScale int32
 }
 
+func NewScalerRunner(scaler UniScaler, stopCh chan struct{}) *scalerRunner {
+	return &scalerRunner{
+		scaler: scaler,
+		latestScale: 1,
+		stopCh: stopCh,
+	}
+}
+
 func (sr *scalerRunner) getLatestScale() int32 {
 	sr.lsm.RLock()
 	defer sr.lsm.RUnlock()
@@ -168,7 +176,15 @@ func (m *MultiScaler) createScaler(ctx context.Context, kpa *kpa.PodAutoscaler) 
 	}
 
 	stopCh := make(chan struct{})
-	runner := &scalerRunner{scaler: scaler, latestScale: -1, stopCh: stopCh}
+	runner := NewScalerRunner(scaler, stopCh)
+	now := time.Now()
+	stat := Stat{
+		Time: &now,
+		PodName: "mock-pod",
+		AverageConcurrentRequests: 1,
+		RequestCount: 1,
+	}
+	scaler.Record(ctx, stat)
 
 	ticker := time.NewTicker(m.dynConfig.Current().TickInterval)
 
@@ -211,6 +227,7 @@ func (m *MultiScaler) createScaler(ctx context.Context, kpa *kpa.PodAutoscaler) 
 func (m *MultiScaler) tickScaler(ctx context.Context, scaler UniScaler, scaleChan chan<- int32) {
 	logger := logging.FromContext(ctx)
 	desiredScale, scaled := scaler.Scale(ctx, time.Now())
+
 
 	if scaled {
 		// Cannot scale negative.
