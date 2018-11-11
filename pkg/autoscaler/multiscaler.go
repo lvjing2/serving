@@ -48,7 +48,7 @@ type UniScaler interface {
 
 	// Scale either proposes a number of replicas or skips proposing. The proposal is requested at the given time.
 	// The returned boolean is true if and only if a proposal was returned.
-	Scale(context.Context, time.Time) (int32, bool)
+	Scale(context.Context, time.Time) int32
 }
 
 // UniScalerFactory creates a UniScaler for a given KPA using the given dynamic configuration.
@@ -67,6 +67,7 @@ type scalerRunner struct {
 func NewScalerRunner(scaler UniScaler, stopCh chan struct{}) *scalerRunner {
 	return &scalerRunner{
 		scaler: scaler,
+		// This is important to
 		latestScale: 1,
 		stopCh: stopCh,
 	}
@@ -178,6 +179,8 @@ func (m *MultiScaler) createScaler(ctx context.Context, kpa *kpa.PodAutoscaler) 
 	stopCh := make(chan struct{})
 	runner := NewScalerRunner(scaler, stopCh)
 	now := time.Now()
+
+	// This is important to generate a mock stat to enable one pod to setup when init a deployment
 	stat := Stat{
 		Time: &now,
 		PodName: "mock-pod",
@@ -226,24 +229,21 @@ func (m *MultiScaler) createScaler(ctx context.Context, kpa *kpa.PodAutoscaler) 
 
 func (m *MultiScaler) tickScaler(ctx context.Context, scaler UniScaler, scaleChan chan<- int32) {
 	logger := logging.FromContext(ctx)
-	desiredScale, scaled := scaler.Scale(ctx, time.Now())
+	desiredScale := scaler.Scale(ctx, time.Now())
 
-
-	if scaled {
-		// Cannot scale negative.
-		if desiredScale < 0 {
-			logger.Errorf("Cannot scale: desiredScale %d < 0.", desiredScale)
-			return
-		}
-
-		// Don't scale to zero if scale to zero is disabled.
-		if desiredScale == 0 && !m.dynConfig.Current().EnableScaleToZero {
-			logger.Warn("Cannot scale: Desired scale == 0 && EnableScaleToZero == false.")
-			return
-		}
-
-		scaleChan <- desiredScale
+	// Cannot scale negative.
+	if desiredScale < 0 {
+		logger.Errorf("Cannot scale: desiredScale %d < 0.", desiredScale)
+		return
 	}
+
+	// Don't scale to zero if scale to zero is disabled.
+	if desiredScale == 0 && !m.dynConfig.Current().EnableScaleToZero {
+		logger.Warn("Cannot scale: Desired scale == 0 && EnableScaleToZero == false.")
+		return
+	}
+
+	scaleChan <- desiredScale
 }
 
 // RecordStat records some statistics for the given KPA. kpaKey should have the
