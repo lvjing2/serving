@@ -63,7 +63,7 @@ type UniScaler interface {
 
 	// Scale either proposes a number of replicas or skips proposing. The proposal is requested at the given time.
 	// The returned boolean is true if and only if a proposal was returned.
-	Scale(context.Context, time.Time) int32
+	Scale(context.Context, time.Time) (int32, bool)
 	// Update reconfigures the UniScaler according to the MetricSpec.
 	Update(MetricSpec) error
 }
@@ -224,20 +224,8 @@ func (m *MultiScaler) createScaler(ctx context.Context, metric *Metric) (*scaler
 	}
 
 	stopCh := make(chan struct{})
-	runner := &scalerRunner{
-		scaler: scaler,
-		stopCh: stopCh,
-		metric: *metric,
-	}
+	runner := &scalerRunner{scaler: scaler, stopCh: stopCh, metric: *metric}
 	runner.metric.Status.DesiredScale = -1
-	now := time.Now()
-	stat := Stat{
-		Time: &now,
-		PodName: "mock-pod",
-		AverageConcurrentRequests: 1,
-		RequestCount: 1,
-	}
-	scaler.Record(ctx, stat)
 
 	ticker := time.NewTicker(m.dynConfig.Current().TickInterval)
 
@@ -279,21 +267,23 @@ func (m *MultiScaler) createScaler(ctx context.Context, metric *Metric) (*scaler
 
 func (m *MultiScaler) tickScaler(ctx context.Context, scaler UniScaler, scaleChan chan<- int32) {
 	logger := logging.FromContext(ctx)
-	desiredScale := scaler.Scale(ctx, time.Now())
+	desiredScale, scaled := scaler.Scale(ctx, time.Now())
 
-	// Cannot scale negative.
-	if desiredScale < 0 {
-		logger.Errorf("Cannot scale: desiredScale %d < 0.", desiredScale)
-		return
+	if scaled {
+		// Cannot scale negative.
+		if desiredScale < 0 {
+			logger.Errorf("Cannot scale: desiredScale %d < 0.", desiredScale)
+			return
+		}
+
+		// Don't scale to zero if scale to zero is disabled.
+		if desiredScale == 0 && !m.dynConfig.Current().EnableScaleToZero {
+			logger.Warn("Cannot scale: Desired scale == 0 && EnableScaleToZero == false.")
+			return
+		}
+
+		scaleChan <- desiredScale
 	}
-
-	// Don't scale to zero if scale to zero is disabled.
-	if desiredScale == 0 && !m.dynConfig.Current().EnableScaleToZero {
-		logger.Warn("Cannot scale: Desired scale == 0 && EnableScaleToZero == false.")
-		return
-	}
-
-	scaleChan <- desiredScale
 }
 
 // RecordStat records some statistics for the given Metric.
