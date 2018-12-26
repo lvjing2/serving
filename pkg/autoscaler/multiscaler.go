@@ -64,6 +64,7 @@ type UniScaler interface {
 	// Scale either proposes a number of replicas or skips proposing. The proposal is requested at the given time.
 	// The returned boolean is true if and only if a proposal was returned.
 	Scale(context.Context, time.Time) (int32, bool)
+
 	// Update reconfigures the UniScaler according to the MetricSpec.
 	Update(MetricSpec) error
 }
@@ -224,7 +225,11 @@ func (m *MultiScaler) createScaler(ctx context.Context, metric *Metric) (*scaler
 	}
 
 	stopCh := make(chan struct{})
-	runner := &scalerRunner{scaler: scaler, stopCh: stopCh, metric: *metric}
+	runner := &scalerRunner{
+		scaler: scaler,
+		stopCh: stopCh,
+		metric: *metric,
+	}
 	runner.metric.Status.DesiredScale = -1
 
 	ticker := time.NewTicker(m.dynConfig.Current().TickInterval)

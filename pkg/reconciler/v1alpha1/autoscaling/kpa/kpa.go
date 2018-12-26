@@ -19,6 +19,7 @@ package kpa
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 
 	"github.com/knative/pkg/controller"
@@ -205,6 +206,14 @@ func (c *Reconciler) reconcile(ctx context.Context, pa *pav1alpha1.PodAutoscaler
 		}
 	}
 
+	if metric.Status.DesiredScale == math.MinInt32 {
+		logger.Infof("the init metric is meaningless")
+		return nil
+	} else if metric.Status.DesiredScale == -1 {
+		pa.Status.MarkInactive("NoTraffic", "The target is not receiving traffic.")
+		return nil
+	}
+
 	// Get the appropriate current scale from the metric, and right size
 	// the scaleTargetRef based on it.
 	want, err := c.kpaScaler.Scale(ctx, pa, metric.Status.DesiredScale)
@@ -249,17 +258,17 @@ func (c *Reconciler) reconcile(ctx context.Context, pa *pav1alpha1.PodAutoscaler
 		reporter.Report(autoscaler.RequestedPodCountM, float64(want))
 	}
 
-	switch {
-	case want == 0:
-		pa.Status.MarkInactive("NoTraffic", "The target is not receiving traffic.")
-
-	case got == 0 && want != 0:
-		pa.Status.MarkActivating(
-			"Queued", "Requests to the target are being buffered as resources are provisioned.")
-
-	case got > 0:
-		pa.Status.MarkActive()
-	}
+	//switch {
+	//case want == 0:
+	//	pa.Status.MarkInactive("NoTraffic", "The target is not receiving traffic.")
+	//
+	//case got == 0 && want != 0:
+	//	pa.Status.MarkActivating(
+	//		"Queued", "Requests to the target are being buffered as resources are provisioned.")
+	//
+	//case got > 0:
+	//	pa.Status.MarkActive()
+	//}
 
 	return nil
 }
