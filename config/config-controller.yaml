@@ -22,7 +22,7 @@ data:
 
   # This is the Go import path for the binary that is containerized
   # and substituted here.
-  queueSidecarImage: github.com/knative/serving/cmd/queue
+  queueSidecarImage: index.docker.io/youji2/queue-7204c16e44715cd30f78443fb99e0f58@sha256:8a8799a6a879e4e7c4332e141959bc4ffa88161600f167d94e943cdfb78bfff7
 
   # List of repositories for which tag to digest resolving should be skipped
-  registriesSkippingTagResolving: "ko.local,dev.local"
+  registriesSkippingTagResolving: "ko.local,dev.local,index.docker.io"
