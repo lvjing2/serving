@@ -123,11 +123,11 @@ func (c *Reconciler) reconcileKPA(ctx context.Context, rev *v1alpha1.Revision) e
 	kpaName := resourcenames.KPA(rev)
 	logger := logging.FromContext(ctx)
 
-	_, getKPAErr := c.podAutoscalerLister.PodAutoscalers(ns).Get(kpaName)
+	kpa, getKPAErr := c.podAutoscalerLister.PodAutoscalers(ns).Get(kpaName)
 	if apierrs.IsNotFound(getKPAErr) {
 		// KPA does not exist. Create it.
 		var err error
-		_, err = c.createKPA(ctx, rev)
+		kpa, err = c.createKPA(ctx, rev)
 		if err != nil {
 			logger.Errorf("Error creating KPA %q: %v", kpaName, err)
 			return err

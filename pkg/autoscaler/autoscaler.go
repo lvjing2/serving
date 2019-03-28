@@ -97,17 +97,6 @@ func (b statsBucket) concurrency() float64 {
 	return total
 }
 
-func (b statsBucket) containValuable() bool {
-	for _, podStats := range b {
-		for _, stat := range podStats {
-			if stat.PodName != mockPodName {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // Autoscaler stores current state of an instance of an autoscaler
 type Autoscaler struct {
 	*DynamicConfig
@@ -125,23 +114,10 @@ type Autoscaler struct {
 	target      float64
 
 	// statsMutex guards the elements in the block below.
-	statsMutex     sync.Mutex
-	bucketed       map[time.Time]statsBucket
-	gotStat        bool
-	keepAliveStat  Stat
-	keepAliveTimes int
-}
-
-// should not use mutex
-func (a *Autoscaler) recordKeepAliveStat(now time.Time) {
-	stat := Stat{
-		Time:                      &now,
-		PodName:                   mockPodName,
-		AverageConcurrentRequests: 1,
-		RequestCount:              1,
-	}
-	ctx := logging.WithLogger(context.Background(), a.logger)
-	a.Record(ctx, stat)
+	statsMutex      sync.Mutex
+	bucketed        map[time.Time]statsBucket
+	keepAliveTicked time.Time
+	keepAliveTimes  int
 }
 
 // New creates a new instance of autoscaler
@@ -163,7 +139,7 @@ func New(
 		target:          target,
 		bucketed:        make(map[time.Time]statsBucket),
 		reporter:        reporter,
-		gotStat:         false,
+		keepAliveTicked: time.Now(),
 		keepAliveTimes:  3,
 	}, nil
 }
@@ -186,11 +162,6 @@ func (a *Autoscaler) Record(ctx context.Context, stat Stat) {
 
 	a.statsMutex.Lock()
 	defer a.statsMutex.Unlock()
-
-	if stat.PodName == mockPodName {
-		a.keepAliveStat = stat
-		return
-	}
 
 	bucketKey := stat.Time.Truncate(bucketSize)
 	bucket, ok := a.bucketed[bucketKey]
@@ -230,30 +201,27 @@ func (a *Autoscaler) Scale(ctx context.Context, now time.Time) (int32, bool) {
 	desiredStablePodCount := a.podCountLimited(math.Ceil(observedStableConcurrency/target), readyPodsCount)
 	desiredPanicPodCount := a.podCountLimited(math.Ceil(observedPanicConcurrency/target), readyPodsCount)
 
-	if a.gotStat == false && observedStableConcurrency > 0.0 {
-		a.gotStat = true
-	}
-
 	//// Do nothing when we have no data.
-	if len(a.bucketed) == 0 || !a.gotStat {
+	if len(a.bucketed) == 0 {
 		logger.Debug("No data to scale on.")
 		return 0, false
 	}
 
 	if observedStableConcurrency > 0.0 {
-		logger.Infof("Reset keepAliveTimes")
-		a.keepAliveTimes = 2
-	} else if observedStableConcurrency == 0.0 && a.keepAliveTimes > 0 {
-		logger.Infof("Mock the stat to start a new stable window")
+		logger.Infof("reset keepAliveTimes")
+		a.keepAliveTimes = 3
+		a.keepAliveTicked = now
+	} else if a.keepAliveTicked.Add(config.StableWindow).Before(now) {
+		logger.Infof("beat the stat to start a new stable window")
 		a.keepAliveTimes--
-		a.recordKeepAliveStat(now)
+		a.keepAliveTicked = now
+	}
+
+	if observedStableConcurrency == 0.0 && a.keepAliveTimes > 0 {
+		logger.Infof("keep the last pod for %d * stable window time", a.keepAliveTimes)
 		return 1, true
 	}
-	// return -1, so mark this revision as inactive for updating route to activator in the last stable window
-	if a.keepAliveTimes == 1 {
-		logger.Infof("Set the kpa to inactive")
-		return -1, true
-	}
+
 	a.reporter.ReportStableRequestConcurrency(observedStableConcurrency)
 	a.reporter.ReportPanicRequestConcurrency(observedPanicConcurrency)
 	a.reporter.ReportTargetRequestConcurrency(target)
