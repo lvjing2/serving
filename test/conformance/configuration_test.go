@@ -22,46 +22,49 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/knative/pkg/test/logging"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	"github.com/knative/serving/test"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestUpdateConfigurationMetadata(t *testing.T) {
+	t.Parallel()
 	clients := setup(t)
 
-	logger := logging.GetContextLogger("TestUpdateConfigurationMetadata")
-
 	names := test.ResourceNames{
-		Service: test.AppendRandomString("test-update-configuration-meta-", logger),
-		Image:   pizzaPlanet1,
+		Config: test.ObjectNameForTest(t),
+		Image:  pizzaPlanet1,
 	}
-	names.Config = names.Service
 
-	defer tearDown(clients, names)
-	test.CleanupOnInterrupt(func() { tearDown(clients, names) }, logger)
+	defer test.TearDown(clients, names)
+	test.CleanupOnInterrupt(func() { test.TearDown(clients, names) })
 
-	logger.Infof("Creating new configuration %s", names.Config)
-	if _, err := test.CreateConfiguration(logger, clients, names, &test.Options{}); err != nil {
+	t.Logf("Creating new configuration %s", names.Config)
+	if _, err := test.CreateConfiguration(t, clients, names, &test.Options{}); err != nil {
 		t.Fatalf("Failed to create configuration %s", names.Config)
 	}
 
-	var cfg *v1alpha1.Configuration
-
-	logger.Info("The Configuration will be updated with the name of the Revision once it is created")
+	t.Log("The Configuration will be updated with the name of the Revision once it is created")
 	var err error
 	names.Revision, err = waitForConfigurationLatestCreatedRevision(clients, names)
 	if err != nil {
 		t.Fatalf("Configuration %s was not updated with the new revision: %v", names.Config, err)
 	}
 
-	cfg = fetchConfiguration(names.Config, clients, t)
+	cfg := fetchConfiguration(names.Config, clients, t)
 
-	logger.Infof("Updating labels of Configuration %s", names.Config)
-	cfg.Labels = map[string]string{
+	t.Logf("Updating labels of Configuration %s", names.Config)
+	newLabels := map[string]string{
 		"labelX": "abc",
 		"labelY": "def",
+	}
+	// Copy over new labels.
+	if cfg.Labels == nil {
+		cfg.Labels = newLabels
+	} else {
+		for k, v := range newLabels {
+			cfg.Labels[k] = v
+		}
 	}
 	cfg, err = clients.ServingClient.Configs.Update(cfg)
 	if err != nil {
@@ -80,17 +83,27 @@ func TestUpdateConfigurationMetadata(t *testing.T) {
 			names.Config, expected, actual)
 	}
 
+	t.Logf("Validating labels were not propagated to Revision %s", names.Revision)
 	err = test.CheckRevisionState(clients.ServingClient, names.Revision, func(r *v1alpha1.Revision) (bool, error) {
-		return checkNoKeysPresent(cfg.Labels, r.Labels, t), nil
+		// Labels we placed on Configuration should _not_ appear on Revision.
+		return checkNoKeysPresent(newLabels, r.Labels, t), nil
 	})
 	if err != nil {
 		t.Errorf("The labels for Revision %s of Configuration %s should not have been updated: %v", names.Revision, names.Config, err)
 	}
 
-	logger.Infof("Updating annotations of Configuration %s", names.Config)
-	cfg.Annotations = map[string]string{
+	t.Logf("Updating annotations of Configuration %s", names.Config)
+	newAnnotations := map[string]string{
 		"annotationA": "123",
 		"annotationB": "456",
+	}
+	if cfg.Annotations == nil {
+		cfg.Annotations = newAnnotations
+	} else {
+		// Copy over new annotations.
+		for k, v := range newAnnotations {
+			cfg.Annotations[k] = v
+		}
 	}
 	cfg, err = clients.ServingClient.Configs.Update(cfg)
 	if err != nil {
@@ -108,8 +121,10 @@ func TestUpdateConfigurationMetadata(t *testing.T) {
 			names.Config, expected, actual)
 	}
 
+	t.Logf("Validating annotations were not propagated to Revision %s", names.Revision)
 	err = test.CheckRevisionState(clients.ServingClient, names.Revision, func(r *v1alpha1.Revision) (bool, error) {
-		return checkNoKeysPresent(cfg.Annotations, r.Annotations, t), nil
+		// Annotations we placed on Configuration should _not_ appear on Revision.
+		return checkNoKeysPresent(newAnnotations, r.Annotations, t), nil
 	})
 	if err != nil {
 		t.Errorf("The annotations for Revision %s of Configuration %s should not have been updated: %v", names.Revision, names.Config, err)
@@ -158,6 +173,8 @@ func checkNoKeysPresent(expected map[string]string, actual map[string]string, t 
 			present = append(present, k)
 		}
 	}
-	t.Logf("Unexpected keys: %v", present)
+	if len(present) != 0 {
+		t.Logf("Unexpected keys: %v", present)
+	}
 	return len(present) == 0
 }

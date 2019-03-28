@@ -17,15 +17,17 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/knative/pkg/apis"
 	"github.com/knative/serving/pkg/apis/autoscaling"
+	net "github.com/knative/serving/pkg/apis/networking"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 )
 
 func TestPodAutoscalerSpecValidation(t *testing.T) {
@@ -150,7 +152,7 @@ func TestPodAutoscalerSpecValidation(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := test.rs.Validate()
+			got := test.rs.Validate(context.Background())
 			if diff := cmp.Diff(test.want.Error(), got.Error()); diff != "" {
 				t.Errorf("Validate (-want, +got) = %v", diff)
 			}
@@ -167,6 +169,28 @@ func TestPodAutoscalerValidation(t *testing.T) {
 		name: "valid",
 		r: &PodAutoscaler{
 			ObjectMeta: v1.ObjectMeta{
+				Name: "valid",
+				Annotations: map[string]string{
+					"minScale": "2",
+				},
+			},
+			Spec: PodAutoscalerSpec{
+				ConcurrencyModel: "Multi",
+				ServiceName:      "foo",
+				ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       "bar",
+				},
+				ProtocolType: net.ProtocolHTTP1,
+			},
+		},
+		want: nil,
+	}, {
+		name: "valid, optional fields",
+		r: &PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{
+				Name: "valid",
 				Annotations: map[string]string{
 					"minScale": "2",
 				},
@@ -183,9 +207,31 @@ func TestPodAutoscalerValidation(t *testing.T) {
 		},
 		want: nil,
 	}, {
+		name: "bad protocol",
+		r: &PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{
+				Name: "valid",
+				Annotations: map[string]string{
+					"minScale": "2",
+				},
+			},
+			Spec: PodAutoscalerSpec{
+				ConcurrencyModel: "Multi",
+				ServiceName:      "foo",
+				ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       "bar",
+				},
+				ProtocolType: net.ProtocolType("WebSocket"),
+			},
+		},
+		want: apis.ErrInvalidValue("WebSocket", "spec.protocolType"),
+	}, {
 		name: "bad scale bounds",
 		r: &PodAutoscaler{
 			ObjectMeta: v1.ObjectMeta{
+				Name: "valid",
 				Annotations: map[string]string{
 					autoscaling.MinScaleAnnotationKey: "FOO",
 				},
@@ -206,11 +252,18 @@ func TestPodAutoscalerValidation(t *testing.T) {
 		}).ViaField("annotations").ViaField("metadata"),
 	}, {
 		name: "empty spec",
-		r:    &PodAutoscaler{},
+		r: &PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{
+				Name: "valid",
+			},
+		},
 		want: apis.ErrMissingField("spec"),
 	}, {
 		name: "nested spec error",
 		r: &PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{
+				Name: "valid",
+			},
 			Spec: PodAutoscalerSpec{
 				ConcurrencyModel: "BadValue",
 				ServiceName:      "foo",
@@ -226,7 +279,7 @@ func TestPodAutoscalerValidation(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := test.r.Validate()
+			got := test.r.Validate(context.Background())
 			if diff := cmp.Diff(test.want.Error(), got.Error()); diff != "" {
 				t.Errorf("Validate (-want, +got) = %v", diff)
 			}
@@ -236,7 +289,7 @@ func TestPodAutoscalerValidation(t *testing.T) {
 
 type notAPodAutoscaler struct{}
 
-func (nar *notAPodAutoscaler) CheckImmutableFields(apis.Immutable) *apis.FieldError {
+func (nar *notAPodAutoscaler) CheckImmutableFields(context.Context, apis.Immutable) *apis.FieldError {
 	return nil
 }
 
@@ -257,6 +310,32 @@ func TestImmutableFields(t *testing.T) {
 					Kind:       "Deployment",
 					Name:       "bar",
 				},
+			},
+		},
+		old: &PodAutoscaler{
+			Spec: PodAutoscalerSpec{
+				ConcurrencyModel: "Multi",
+				ServiceName:      "foo",
+				ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       "bar",
+				},
+			},
+		},
+		want: nil,
+	}, {
+		name: "good (protocol added)",
+		new: &PodAutoscaler{
+			Spec: PodAutoscalerSpec{
+				ConcurrencyModel: "Multi",
+				ServiceName:      "foo",
+				ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       "bar",
+				},
+				ProtocolType: net.ProtocolHTTP1,
 			},
 		},
 		old: &PodAutoscaler{
@@ -392,7 +471,7 @@ func TestImmutableFields(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := test.new.CheckImmutableFields(test.old)
+			got := test.new.CheckImmutableFields(context.Background(), test.old)
 			if diff := cmp.Diff(test.want.Error(), got.Error()); diff != "" {
 				t.Errorf("Validate (-want, +got) = %v", diff)
 			}

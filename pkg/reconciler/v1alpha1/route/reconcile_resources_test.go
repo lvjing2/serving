@@ -100,8 +100,8 @@ func TestReconcileTargetRevisions(t *testing.T) {
 		expectErr error
 	}{{
 		name: "Valid target revision",
-		tc: traffic.Config{Targets: map[string][]traffic.RevisionTarget{
-			"": {{
+		tc: traffic.Config{Targets: map[string]traffic.RevisionTargets{
+			traffic.DefaultTarget: {{
 				TrafficTarget: v1alpha1.TrafficTarget{
 					RevisionName: "revision",
 					Percent:      100,
@@ -110,8 +110,8 @@ func TestReconcileTargetRevisions(t *testing.T) {
 			}}}},
 	}, {
 		name: "invalid target revision",
-		tc: traffic.Config{Targets: map[string][]traffic.RevisionTarget{
-			"": {{
+		tc: traffic.Config{Targets: map[string]traffic.RevisionTargets{
+			traffic.DefaultTarget: {{
 				TrafficTarget: v1alpha1.TrafficTarget{
 					RevisionName: "inal-revision",
 					Percent:      100,
@@ -139,13 +139,13 @@ func TestReconcileTargetRevisions(t *testing.T) {
 }
 
 func newTestClusterIngress(r *v1alpha1.Route) *netv1alpha1.ClusterIngress {
-	tc := &traffic.Config{Targets: map[string][]traffic.RevisionTarget{
-		"": {{
+	tc := &traffic.Config{Targets: map[string]traffic.RevisionTargets{
+		traffic.DefaultTarget: {{
 			TrafficTarget: v1alpha1.TrafficTarget{
 				RevisionName: "revision",
 				Percent:      100,
 			},
 			Active: true,
 		}}}}
-	return resources.MakeClusterIngress(r, tc)
+	return resources.MakeClusterIngress(r, tc, "foo-ingress")
 }

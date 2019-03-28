@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -122,7 +123,7 @@ func TestConfigurationSpecValidation(t *testing.T) {
 				},
 			},
 		},
-		want: apis.ErrInvalidValue("Object 'Kind' is missing in '{\"metadata\":{\"creationTimestamp\":null},\"spec\":{\"steps\":[{\"name\":\"\",\"image\":\"foo\",\"resources\":{}}]},\"status\":{\"startTime\":null,\"completionTime\":null,\"stepStates\":null,\"stepsCompleted\":null}}'", "build"),
+		want: apis.ErrInvalidValue("Object 'Kind' is missing in '{\"metadata\":{\"creationTimestamp\":null},\"spec\":{\"steps\":[{\"name\":\"\",\"image\":\"foo\",\"resources\":{}}],\"Status\":\"\"},\"status\":{\"stepsCompleted\":null}}'", "build"),
 	}, {
 		name: "build is not an object",
 		c: &ConfigurationSpec{
@@ -142,7 +143,7 @@ func TestConfigurationSpecValidation(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := test.c.Validate()
+			got := test.c.Validate(context.Background())
 			if diff := cmp.Diff(test.want.Error(), got.Error()); diff != "" {
 				t.Errorf("validateContainer (-want, +got) = %v", diff)
 			}
@@ -158,6 +159,9 @@ func TestConfigurationValidation(t *testing.T) {
 	}{{
 		name: "valid",
 		c: &Configuration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "valid",
+			},
 			Spec: ConfigurationSpec{
 				RevisionTemplate: RevisionTemplateSpec{
 					Spec: RevisionSpec{
@@ -172,6 +176,9 @@ func TestConfigurationValidation(t *testing.T) {
 	}, {
 		name: "propagate revision failures",
 		c: &Configuration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "valid",
+			},
 			Spec: ConfigurationSpec{
 				RevisionTemplate: RevisionTemplateSpec{
 					Spec: RevisionSpec{
@@ -186,7 +193,11 @@ func TestConfigurationValidation(t *testing.T) {
 		want: apis.ErrDisallowedFields("spec.revisionTemplate.spec.container.name"),
 	}, {
 		name: "empty spec",
-		c:    &Configuration{},
+		c: &Configuration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "valid",
+			},
+		},
 		want: apis.ErrMissingField("spec"),
 	}, {
 		name: "invalid name - dots",
@@ -195,22 +206,26 @@ func TestConfigurationValidation(t *testing.T) {
 				Name: "do.not.use.dots",
 			},
 		},
-		want: (&apis.FieldError{Message: "Invalid resource name: special character . must not be present", Paths: []string{"metadata.name"}}).
-			Also(apis.ErrMissingField("spec")),
+		want: (&apis.FieldError{
+			Message: "not a DNS 1035 label: [a DNS-1035 label must consist of lower case alphanumeric characters or '-', start with an alphabetic character, and end with an alphanumeric character (e.g. 'my-name',  or 'abc-123', regex used for validation is '[a-z]([-a-z0-9]*[a-z0-9])?')]",
+			Paths:   []string{"metadata.name"},
+		}).Also(apis.ErrMissingField("spec")),
 	}, {
 		name: "invalid name - too long",
 		c: &Configuration{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: strings.Repeat("a", 65),
+				Name: strings.Repeat("a", 64),
 			},
 		},
-		want: (&apis.FieldError{Message: "Invalid resource name: length must be no more than 63 characters", Paths: []string{"metadata.name"}}).
-			Also(apis.ErrMissingField("spec")),
+		want: (&apis.FieldError{
+			Message: "not a DNS 1035 label: [must be no more than 63 characters]",
+			Paths:   []string{"metadata.name"},
+		}).Also(apis.ErrMissingField("spec")),
 	}}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := test.c.Validate()
+			got := test.c.Validate(context.Background())
 			if diff := cmp.Diff(test.want.Error(), got.Error()); diff != "" {
 				t.Errorf("validateContainer (-want, +got) = %v", diff)
 			}

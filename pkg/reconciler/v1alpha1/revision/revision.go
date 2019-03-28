@@ -23,6 +23,17 @@ import (
 	"reflect"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/util/sets"
+	appsv1informers "k8s.io/client-go/informers/apps/v1"
+	corev1informers "k8s.io/client-go/informers/core/v1"
+	appsv1listers "k8s.io/client-go/listers/apps/v1"
+	corev1listers "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
+
 	"github.com/google/go-containerregistry/pkg/authn/k8schain"
 	cachinginformers "github.com/knative/caching/pkg/client/informers/externalversions/caching/v1alpha1"
 	cachinglisters "github.com/knative/caching/pkg/client/listers/caching/v1alpha1"
@@ -38,41 +49,26 @@ import (
 	servinginformers "github.com/knative/serving/pkg/client/informers/externalversions/serving/v1alpha1"
 	kpalisters "github.com/knative/serving/pkg/client/listers/autoscaling/v1alpha1"
 	listers "github.com/knative/serving/pkg/client/listers/serving/v1alpha1"
+	"github.com/knative/serving/pkg/network"
 	"github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/revision/config"
+
 	"go.uber.org/zap"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	appsv1informers "k8s.io/client-go/informers/apps/v1"
-	corev1informers "k8s.io/client-go/informers/core/v1"
-	appsv1listers "k8s.io/client-go/listers/apps/v1"
-	corev1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/cache"
 )
 
 const (
 	controllerAgentName = "revision-controller"
 )
 
-var (
-	foregroundDeletion = metav1.DeletePropagationForeground
-	fgDeleteOptions    = &metav1.DeleteOptions{
-		PropagationPolicy: &foregroundDeletion,
-	}
-)
-
-type Changed bool
+type changed bool
 
 const (
-	WasChanged Changed = true
-	Unchanged  Changed = false
+	wasChanged changed = true
+	unchanged  changed = false
 )
 
 type resolver interface {
-	Resolve(string, k8schain.Options, map[string]struct{}) (string, error)
+	Resolve(string, k8schain.Options, sets.String) (string, error)
 }
 
 type configStore interface {
@@ -145,34 +141,19 @@ func NewController(
 
 	// Set up an event handler for when the resource types of interest change
 	c.Logger.Info("Setting up event handlers")
-	revisionInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    impl.Enqueue,
-		UpdateFunc: controller.PassNew(impl.Enqueue),
-		DeleteFunc: impl.Enqueue,
-	})
+	revisionInformer.Informer().AddEventHandler(reconciler.Handler(impl.Enqueue))
 
-	endpointsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    impl.EnqueueLabelOfNamespaceScopedResource("", serving.RevisionLabelKey),
-		UpdateFunc: controller.PassNew(impl.EnqueueLabelOfNamespaceScopedResource("", serving.RevisionLabelKey)),
-		DeleteFunc: impl.EnqueueLabelOfNamespaceScopedResource("", serving.RevisionLabelKey),
-	})
+	endpointsInformer.Informer().AddEventHandler(reconciler.Handler(
+		impl.EnqueueLabelOfNamespaceScopedResource("", serving.RevisionLabelKey)))
 
 	deploymentInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("Revision")),
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    impl.EnqueueControllerOf,
-			UpdateFunc: controller.PassNew(impl.EnqueueControllerOf),
-			DeleteFunc: impl.EnqueueControllerOf,
-		},
+		Handler:    reconciler.Handler(impl.EnqueueControllerOf),
 	})
 
 	podAutoscalerInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("Revision")),
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    impl.EnqueueControllerOf,
-			UpdateFunc: controller.PassNew(impl.EnqueueControllerOf),
-			DeleteFunc: impl.EnqueueControllerOf,
-		},
+		Handler:    reconciler.Handler(impl.EnqueueControllerOf),
 	})
 
 	c.tracker = tracker.New(impl.EnqueueKey, opt.GetTrackerLease())
@@ -183,17 +164,13 @@ func NewController(
 
 	configMapInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("Revision")),
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    impl.EnqueueControllerOf,
-			UpdateFunc: controller.PassNew(impl.EnqueueControllerOf),
-			DeleteFunc: impl.EnqueueControllerOf,
-		},
+		Handler:    reconciler.Handler(impl.EnqueueControllerOf),
 	})
 
 	c.buildInformerFactory = newDuckInformerFactory(c.tracker, buildInformerFactory)
 
 	configsToResync := []interface{}{
-		&config.Network{},
+		&network.Config{},
 		&config.Observability{},
 		&config.Controller{},
 	}
@@ -222,12 +199,8 @@ func KResourceTypedInformerFactory(opt reconciler.Options) duck.InformerFactory 
 func newDuckInformerFactory(t tracker.Interface, delegate duck.InformerFactory) duck.InformerFactory {
 	return &duck.CachedInformerFactory{
 		Delegate: &duck.EnqueueInformerFactory{
-			Delegate: delegate,
-			EventHandler: cache.ResourceEventHandlerFuncs{
-				AddFunc:    t.OnChanged,
-				UpdateFunc: controller.PassNew(t.OnChanged),
-				DeleteFunc: t.OnChanged,
-			},
+			Delegate:     delegate,
+			EventHandler: reconciler.Handler(t.OnChanged),
 		},
 	}
 }
@@ -256,6 +229,7 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 	} else if err != nil {
 		return err
 	}
+
 	// Don't modify the informer's copy.
 	rev := original.DeepCopy()
 
@@ -268,10 +242,13 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 		// cache may be stale and we don't want to overwrite a prior update
 		// to status with this stale state.
 	} else if _, err := c.updateStatus(rev); err != nil {
-		logger.Warn("Failed to update revision status", zap.Error(err))
+		logger.Warnw("Failed to update revision status", zap.Error(err))
 		c.Recorder.Eventf(rev, corev1.EventTypeWarning, "UpdateFailed",
 			"Failed to update status for Revision %q: %v", rev.Name, err)
 		return err
+	}
+	if err != nil {
+		c.Recorder.Event(rev, corev1.EventTypeWarning, "InternalError", err.Error())
 	}
 	return err
 }
@@ -279,7 +256,7 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 func (c *Reconciler) reconcileBuild(ctx context.Context, rev *v1alpha1.Revision) error {
 	buildRef := rev.BuildRef()
 	if buildRef == nil {
-		rev.Status.PropagateBuildStatus(duckv1alpha1.KResourceStatus{
+		rev.Status.PropagateBuildStatus(duckv1alpha1.Status{
 			Conditions: []duckv1alpha1.Condition{{
 				Type:   duckv1alpha1.ConditionSucceeded,
 				Status: corev1.ConditionTrue,
@@ -351,15 +328,20 @@ func (c *Reconciler) reconcileDigest(ctx context.Context, rev *v1alpha1.Revision
 
 func (c *Reconciler) reconcile(ctx context.Context, rev *v1alpha1.Revision) error {
 	logger := commonlogging.FromContext(ctx)
+	if rev.GetDeletionTimestamp() != nil {
+		return nil
+	}
 
 	// We may be reading a version of the object that was stored at an older version
 	// and may not have had all of the assumed defaults specified.  This won't result
 	// in this getting written back to the API Server, but lets downstream logic make
 	// assumptions about defaulting.
-	rev.SetDefaults()
+	rev.SetDefaults(ctx)
 
 	rev.Status.InitializeConditions()
 	c.updateRevisionLoggingURL(ctx, rev)
+
+	readyBeforeReconcile := rev.Status.IsReady()
 
 	if err := c.reconcileBuild(ctx, rev); err != nil {
 		return err
@@ -406,12 +388,19 @@ func (c *Reconciler) reconcile(ctx context.Context, rev *v1alpha1.Revision) erro
 
 		for _, phase := range phases {
 			if err := phase.f(ctx, rev); err != nil {
-				logger.Errorf("Failed to reconcile %s: %v", phase.name, zap.Error(err))
+				logger.Errorw("Failed to reconcile", zap.String("phase", phase.name), zap.Error(err))
 				return err
 			}
 		}
 	}
 
+	readyAfterReconcile := rev.Status.IsReady()
+	if !readyBeforeReconcile && readyAfterReconcile {
+		c.Recorder.Event(rev, corev1.EventTypeNormal, "RevisionReady",
+			"Revision becomes ready upon all resources being ready")
+	}
+
+	rev.Status.ObservedGeneration = rev.Generation
 	return nil
 }
 

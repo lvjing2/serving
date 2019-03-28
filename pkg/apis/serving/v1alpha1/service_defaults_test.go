@@ -17,9 +17,13 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/knative/serving/pkg/apis/config"
 )
 
 func TestServiceDefaulting(t *testing.T) {
@@ -58,7 +62,10 @@ func TestServiceDefaulting(t *testing.T) {
 					Configuration: ConfigurationSpec{
 						RevisionTemplate: RevisionTemplateSpec{
 							Spec: RevisionSpec{
-								TimeoutSeconds: defaultTimeoutSeconds,
+								TimeoutSeconds: config.DefaultRevisionTimeoutSeconds,
+								Container: corev1.Container{
+									Resources: defaultResources,
+								},
 							},
 						},
 					},
@@ -74,7 +81,7 @@ func TestServiceDefaulting(t *testing.T) {
 						RevisionTemplate: RevisionTemplateSpec{
 							Spec: RevisionSpec{
 								ContainerConcurrency: 1,
-								TimeoutSeconds:       defaultTimeoutSeconds,
+								TimeoutSeconds:       config.DefaultRevisionTimeoutSeconds,
 							},
 						},
 					},
@@ -88,7 +95,10 @@ func TestServiceDefaulting(t *testing.T) {
 						RevisionTemplate: RevisionTemplateSpec{
 							Spec: RevisionSpec{
 								ContainerConcurrency: 1,
-								TimeoutSeconds:       defaultTimeoutSeconds,
+								TimeoutSeconds:       config.DefaultRevisionTimeoutSeconds,
+								Container: corev1.Container{
+									Resources: defaultResources,
+								},
 							},
 						},
 					},
@@ -99,16 +109,19 @@ func TestServiceDefaulting(t *testing.T) {
 		name: "pinned",
 		in: &Service{
 			Spec: ServiceSpec{
-				Pinned: &PinnedType{},
+				DeprecatedPinned: &PinnedType{},
 			},
 		},
 		want: &Service{
 			Spec: ServiceSpec{
-				Pinned: &PinnedType{
+				DeprecatedPinned: &PinnedType{
 					Configuration: ConfigurationSpec{
 						RevisionTemplate: RevisionTemplateSpec{
 							Spec: RevisionSpec{
-								TimeoutSeconds: defaultTimeoutSeconds,
+								TimeoutSeconds: config.DefaultRevisionTimeoutSeconds,
+								Container: corev1.Container{
+									Resources: defaultResources,
+								},
 							},
 						},
 					},
@@ -119,7 +132,7 @@ func TestServiceDefaulting(t *testing.T) {
 		name: "pinned - no overwrite",
 		in: &Service{
 			Spec: ServiceSpec{
-				Pinned: &PinnedType{
+				DeprecatedPinned: &PinnedType{
 					Configuration: ConfigurationSpec{
 						RevisionTemplate: RevisionTemplateSpec{
 							Spec: RevisionSpec{
@@ -133,12 +146,15 @@ func TestServiceDefaulting(t *testing.T) {
 		},
 		want: &Service{
 			Spec: ServiceSpec{
-				Pinned: &PinnedType{
+				DeprecatedPinned: &PinnedType{
 					Configuration: ConfigurationSpec{
 						RevisionTemplate: RevisionTemplateSpec{
 							Spec: RevisionSpec{
 								ContainerConcurrency: 1,
 								TimeoutSeconds:       99,
+								Container: corev1.Container{
+									Resources: defaultResources,
+								},
 							},
 						},
 					},
@@ -158,7 +174,10 @@ func TestServiceDefaulting(t *testing.T) {
 					Configuration: ConfigurationSpec{
 						RevisionTemplate: RevisionTemplateSpec{
 							Spec: RevisionSpec{
-								TimeoutSeconds: defaultTimeoutSeconds,
+								TimeoutSeconds: config.DefaultRevisionTimeoutSeconds,
+								Container: corev1.Container{
+									Resources: defaultResources,
+								},
 							},
 						},
 					},
@@ -189,6 +208,9 @@ func TestServiceDefaulting(t *testing.T) {
 							Spec: RevisionSpec{
 								ContainerConcurrency: 1,
 								TimeoutSeconds:       99,
+								Container: corev1.Container{
+									Resources: defaultResources,
+								},
 							},
 						},
 					},
@@ -200,8 +222,8 @@ func TestServiceDefaulting(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := test.in
-			got.SetDefaults()
-			if diff := cmp.Diff(test.want, got); diff != "" {
+			got.SetDefaults(context.Background())
+			if diff := cmp.Diff(test.want, got, ignoreUnexportedResources); diff != "" {
 				t.Errorf("SetDefaults (-want, +got) = %v", diff)
 			}
 		})

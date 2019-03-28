@@ -18,6 +18,7 @@ package kpa
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/knative/pkg/apis"
@@ -34,7 +35,7 @@ import (
 	"k8s.io/client-go/scale"
 )
 
-const ScaleUnknown = -1
+const scaleUnknown = -1
 
 // kpaScaler scales the target of a kpa-class PA up or down including scaling to zero.
 type kpaScaler struct {
@@ -59,7 +60,6 @@ func NewKPAScaler(servingClientSet clientset.Interface, scaleClientSet scale.Sca
 
 	// Watch for config changes.
 	configMapWatcher.Watch(autoscaler.ConfigName, ks.receiveAutoscalerConfig)
-
 	return ks
 }
 
@@ -86,16 +86,14 @@ func (ks *kpaScaler) getAutoscalerConfig() *autoscaler.Config {
 }
 
 // pre: 0 <= min <= max && 0 <= x
-func applyBounds(min, max int32) func(int32) int32 {
-	return func(x int32) int32 {
-		if x < min {
-			return min
-		}
-		if max != 0 && x > max {
-			return max
-		}
-		return x
+func applyBounds(min, max, x int32) int32 {
+	if x < min {
+		return min
 	}
+	if max != 0 && x > max {
+		return max
+	}
+	return x
 }
 
 // Scale attempts to scale the given PA's target reference to the desired scale.
@@ -114,7 +112,7 @@ func (ks *kpaScaler) Scale(ctx context.Context, pa *pav1alpha1.PodAutoscaler, de
 
 	gv, err := schema.ParseGroupVersion(pa.Spec.ScaleTargetRef.APIVersion)
 	if err != nil {
-		logger.Error("Unable to parse APIVersion.", zap.Error(err))
+		logger.Errorw("Unable to parse APIVersion", zap.Error(err))
 		return desiredScale, err
 	}
 	resource := apis.KindToResource(gv.WithKind(pa.Spec.ScaleTargetRef.Kind)).GroupResource()
@@ -123,54 +121,16 @@ func (ks *kpaScaler) Scale(ctx context.Context, pa *pav1alpha1.PodAutoscaler, de
 	// Identify the current scale.
 	scl, err := ks.scaleClientSet.Scales(pa.Namespace).Get(resource, resourceName)
 	if err != nil {
-		logger.Errorf("Resource %q not found.", resourceName, zap.Error(err))
+		logger.Errorw(fmt.Sprintf("Resource %q not found", resourceName), zap.Error(err))
 		return desiredScale, err
 	}
 	currentScale := scl.Spec.Replicas
 
-	if newScale := applyBounds(pa.ScaleBounds())(desiredScale); newScale != desiredScale {
+	min, max := pa.ScaleBounds()
+	if newScale := applyBounds(min, max, desiredScale); newScale != desiredScale {
 		logger.Debugf("Adjusting desiredScale: %v -> %v", desiredScale, newScale)
 		desiredScale = newScale
 	}
-
-	//if desiredScale == 0 {
-	//	// We should only scale to zero when both of the following conditions are true:
-	//	//   a) The PA has been active for atleast the stable window, after which it gets marked inactive
-	//	//   b) The PA has been inactive for atleast the grace period
-	//
-	//	config := ks.getAutoscalerConfig()
-	//
-	//	if pa.Status.IsActivating() { // Active=Unknown
-	//		// Don't scale-to-zero during activation
-	//		desiredScale = ScaleUnknown
-	//	} else if pa.Status.IsReady() { // Active=True
-	//		// Don't scale-to-zero if the PA is active
-	//
-	//		// Only let a revision be scaled to 0 if it's been active for at
-	//		// least the stable window's time.
-	//		if pa.Status.CanMarkInactive(config.StableWindow) {
-	//			return desiredScale, nil
-	//		}
-	//		// Otherwise, scale down to 1 until the idle period elapses
-	//		desiredScale = 1
-	//	} else { // Active=False
-	//		// Don't scale-to-zero if the grace period hasn't elapsed
-	//		if !pa.Status.CanScaleToZero(config.ScaleToZeroGracePeriod) {
-	//			return desiredScale, nil
-	//		}
-	//	}
-	//}
-	//
-	//// Scale from zero. When there are no metrics scale to 1.
-	//if currentScale == 0 && desiredScale == ScaleUnknown {
-	//	logger.Debugf("Scaling up from 0 to 1")
-	//	desiredScale = 1
-	//}
-	//
-	//if desiredScale < 0 {
-	//	logger.Debug("Metrics are not yet being collected.")
-	//	return desiredScale, nil
-	//}
 
 	if desiredScale == currentScale {
 		return desiredScale, nil
@@ -181,7 +141,7 @@ func (ks *kpaScaler) Scale(ctx context.Context, pa *pav1alpha1.PodAutoscaler, de
 	scl.Spec.Replicas = desiredScale
 	_, err = ks.scaleClientSet.Scales(pa.Namespace).Update(resource, scl)
 	if err != nil {
-		logger.Errorf("Error scaling target reference %v.", resourceName, zap.Error(err))
+		logger.Errorw(fmt.Sprintf("Error scaling target reference %s", resourceName), zap.Error(err))
 		return desiredScale, err
 	}
 

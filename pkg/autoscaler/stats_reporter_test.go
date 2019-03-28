@@ -17,8 +17,13 @@ limitations under the License.
 package autoscaler
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/knative/pkg/metrics/metricskey"
 	"go.opencensus.io/stats/view"
@@ -42,8 +47,8 @@ func TestNewStatsReporterErrors(t *testing.T) {
 
 func TestReporter_Report(t *testing.T) {
 	r := &Reporter{}
-	if err := r.Report(DesiredPodCountM, 10); err == nil {
-		t.Error("Reporter.Report() expected an error for Report call before init. Got success.")
+	if err := r.ReportDesiredPodCount(10); err == nil {
+		t.Error("Reporter.ReportDesiredPodCount() expected an error for Report call before init. Got success.")
 	}
 
 	r, _ = NewStatsReporter("testns", "testsvc", "testconfig", "testrev")
@@ -55,77 +60,111 @@ func TestReporter_Report(t *testing.T) {
 	}
 
 	// Send statistics only once and observe the results
-	expectSuccess(t, func() error { return r.Report(DesiredPodCountM, 10) })
-	expectSuccess(t, func() error { return r.Report(RequestedPodCountM, 7) })
-	expectSuccess(t, func() error { return r.Report(ActualPodCountM, 5) })
-	expectSuccess(t, func() error { return r.Report(PanicM, 0) })
-	expectSuccess(t, func() error { return r.Report(ObservedPodCountM, 1) })
-	expectSuccess(t, func() error { return r.Report(StableRequestConcurrencyM, 2) })
-	expectSuccess(t, func() error { return r.Report(PanicRequestConcurrencyM, 3) })
-	expectSuccess(t, func() error { return r.Report(TargetConcurrencyM, 0.9) })
-	checkData(t, "desired_pods", wantTags, 10)
-	checkData(t, "requested_pods", wantTags, 7)
-	checkData(t, "actual_pods", wantTags, 5)
-	checkData(t, "panic_mode", wantTags, 0)
-	checkData(t, "observed_pods", wantTags, 1)
-	checkData(t, "stable_request_concurrency", wantTags, 2)
-	checkData(t, "panic_request_concurrency", wantTags, 3)
-	checkData(t, "target_concurrency_per_pod", wantTags, 0.9)
+	expectSuccess(t, "ReportDesiredPodCount", func() error { return r.ReportDesiredPodCount(10) })
+	expectSuccess(t, "ReportRequestedPodCount", func() error { return r.ReportRequestedPodCount(7) })
+	expectSuccess(t, "ReportActualPodCount", func() error { return r.ReportActualPodCount(5) })
+	expectSuccess(t, "ReportPanic", func() error { return r.ReportPanic(0) })
+	expectSuccess(t, "ReportObservedPodCount", func() error { return r.ReportObservedPodCount(1) })
+	expectSuccess(t, "ReportStableRequestConcurrency", func() error { return r.ReportStableRequestConcurrency(2) })
+	expectSuccess(t, "ReportPanicRequestConcurrency", func() error { return r.ReportPanicRequestConcurrency(3) })
+	expectSuccess(t, "ReportTargetRequestConcurrency", func() error { return r.ReportTargetRequestConcurrency(0.9) })
+	assertData(t, "desired_pods", wantTags, 10)
+	assertData(t, "requested_pods", wantTags, 7)
+	assertData(t, "actual_pods", wantTags, 5)
+	assertData(t, "panic_mode", wantTags, 0)
+	assertData(t, "observed_pods", wantTags, 1)
+	assertData(t, "stable_request_concurrency", wantTags, 2)
+	assertData(t, "panic_request_concurrency", wantTags, 3)
+	assertData(t, "target_concurrency_per_pod", wantTags, 0.9)
 
 	// All the stats are gauges - record multiple entries for one stat - last one should stick
-	expectSuccess(t, func() error { return r.Report(DesiredPodCountM, 1) })
-	expectSuccess(t, func() error { return r.Report(DesiredPodCountM, 2) })
-	expectSuccess(t, func() error { return r.Report(DesiredPodCountM, 3) })
-	checkData(t, "desired_pods", wantTags, 3)
+	expectSuccess(t, "ReportDesiredPodCount", func() error { return r.ReportDesiredPodCount(1) })
+	expectSuccess(t, "ReportDesiredPodCount", func() error { return r.ReportDesiredPodCount(2) })
+	expectSuccess(t, "ReportDesiredPodCount", func() error { return r.ReportDesiredPodCount(3) })
+	assertData(t, "desired_pods", wantTags, 3)
 
-	expectSuccess(t, func() error { return r.Report(RequestedPodCountM, 4) })
-	expectSuccess(t, func() error { return r.Report(RequestedPodCountM, 5) })
-	expectSuccess(t, func() error { return r.Report(RequestedPodCountM, 6) })
-	checkData(t, "requested_pods", wantTags, 6)
+	expectSuccess(t, "ReportRequestedPodCount", func() error { return r.ReportRequestedPodCount(4) })
+	expectSuccess(t, "ReportRequestedPodCount", func() error { return r.ReportRequestedPodCount(5) })
+	expectSuccess(t, "ReportRequestedPodCount", func() error { return r.ReportRequestedPodCount(6) })
+	assertData(t, "requested_pods", wantTags, 6)
 
-	expectSuccess(t, func() error { return r.Report(ActualPodCountM, 7) })
-	expectSuccess(t, func() error { return r.Report(ActualPodCountM, 8) })
-	expectSuccess(t, func() error { return r.Report(ActualPodCountM, 9) })
-	checkData(t, "actual_pods", wantTags, 9)
+	expectSuccess(t, "ReportActualPodCount", func() error { return r.ReportActualPodCount(7) })
+	expectSuccess(t, "ReportActualPodCount", func() error { return r.ReportActualPodCount(8) })
+	expectSuccess(t, "ReportActualPodCount", func() error { return r.ReportActualPodCount(9) })
+	assertData(t, "actual_pods", wantTags, 9)
 
-	expectSuccess(t, func() error { return r.Report(PanicM, 1) })
-	expectSuccess(t, func() error { return r.Report(PanicM, 0) })
-	expectSuccess(t, func() error { return r.Report(PanicM, 1) })
-	checkData(t, "panic_mode", wantTags, 1)
+	expectSuccess(t, "ReportPanic", func() error { return r.ReportPanic(1) })
+	expectSuccess(t, "ReportPanic", func() error { return r.ReportPanic(0) })
+	expectSuccess(t, "ReportPanic", func() error { return r.ReportPanic(1) })
+	assertData(t, "panic_mode", wantTags, 1)
 
-	expectSuccess(t, func() error { return r.Report(PanicM, 0) })
-	checkData(t, "panic_mode", wantTags, 0)
+	expectSuccess(t, "ReportPanic", func() error { return r.ReportPanic(0) })
+	assertData(t, "panic_mode", wantTags, 0)
 }
 
-func expectSuccess(t *testing.T, f func() error) {
+func TestReporter_EmptyServiceName(t *testing.T) {
+	// Metrics reported to an empty service name will be recorded with service "unknown" (metricskey.ValueUnknown).
+	r, _ := NewStatsReporter("testns", "" /*service=*/, "testconfig", "testrev")
+	wantTags := map[string]string{
+		metricskey.LabelNamespaceName:     "testns",
+		metricskey.LabelServiceName:       metricskey.ValueUnknown,
+		metricskey.LabelConfigurationName: "testconfig",
+		metricskey.LabelRevisionName:      "testrev",
+	}
+	expectSuccess(t, "ReportDesiredPodCount", func() error { return r.ReportDesiredPodCount(10) })
+	assertData(t, "desired_pods", wantTags, 10)
+}
+
+func expectSuccess(t *testing.T, funcName string, f func() error) {
 	if err := f(); err != nil {
-		t.Errorf("Reporter.Report() expected success but got error %v", err)
+		t.Errorf("Reporter.%v() expected success but got error %v", funcName, err)
 	}
 }
 
-func checkData(t *testing.T, name string, wantTags map[string]string, wantValue float64) {
-	if d, err := view.RetrieveData(name); err != nil {
-		t.Errorf("Reporter.Report() error = %v, wantErr %v", err, false)
-	} else {
-		if len(d) != 1 {
-			t.Errorf("Reporter.Report() len(d) %v, want %v", len(d), 1)
+func assertData(t *testing.T, name string, wantTags map[string]string, wantValue float64) {
+	var err error
+	wait.PollImmediate(1*time.Millisecond, 2*time.Second, func() (bool, error) {
+		if err = checkData(name, wantTags, wantValue); err != nil {
+			return false, nil
 		}
-		for _, got := range d[0].Tags {
-			if want, ok := wantTags[got.Key.Name()]; !ok {
-				t.Errorf("Reporter.Report() got an extra tag %v: %v", got.Key.Name(), got.Value)
-			} else {
-				if got.Value != want {
-					t.Errorf("Reporter.Report() expected a different tag value. key:%v, got: %v, want: %v", got.Key.Name(), got.Value, want)
-				}
-			}
-		}
+		return true, nil
+	})
 
-		if s, ok := d[0].Data.(*view.LastValueData); !ok {
-			t.Error("Reporter.Report() expected a LastValueData type")
-		} else {
-			if s.Value != (float64)(wantValue) {
-				t.Errorf("Reporter.Report() expected %v got %v. metric: %v", s.Value, (float64)(wantValue), name)
-			}
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func checkData(name string, wantTags map[string]string, wantValue float64) error {
+	d, err := view.RetrieveData(name)
+	if err != nil {
+		return err
+	}
+
+	if len(d) < 1 {
+		return errors.New("len(d) = 0, want: >= 0")
+	}
+	last := d[len(d)-1]
+
+	for _, got := range last.Tags {
+		want, ok := wantTags[got.Key.Name()]
+		if !ok {
+			return fmt.Errorf("got an unexpected tag from view.RetrieveData: (%v, %v)", got.Key.Name(), got.Value)
+		}
+		if got.Value != want {
+			return fmt.Errorf("Tags[%v] = %v, want: %v", got.Key.Name(), got.Value, want)
 		}
 	}
+
+	var value *view.LastValueData
+	value, ok := last.Data.(*view.LastValueData)
+	if !ok {
+		return fmt.Errorf("last.Data.(Type) = %T, want: %T", last.Data, value)
+	}
+
+	if value.Value != wantValue {
+		return fmt.Errorf("Value = %v, want: %v", value.Value, wantValue)
+	}
+
+	return nil
 }

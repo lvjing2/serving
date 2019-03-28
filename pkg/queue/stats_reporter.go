@@ -21,6 +21,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/knative/serving/pkg/autoscaler"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
@@ -37,16 +38,19 @@ const (
 	// will be dropped if LastValue aggregation is used for a view.
 	ReporterReportingPeriod = time.Second
 
-	operationsPerSecondN       = "operations_per_second"
-	averageConcurrentRequestsN = "average_concurrent_requests"
-	lameDuckN                  = "lame_duck"
+	operationsPerSecondN              = "operations_per_second"
+	proxiedOperationsPerSecondN       = "proxied_operations_per_second"
+	averageConcurrentRequestsN        = "average_concurrent_requests"
+	averageProxiedConcurrentRequestsN = "average_proxied_concurrent_requests"
 
 	// OperationsPerSecondM number of operations per second.
 	OperationsPerSecondM Measurement = iota
 	// AverageConcurrentRequestsM average number of requests currently being handled by this pod.
 	AverageConcurrentRequestsM
-	// LameDuckM indicates this Pod has received a shutdown signal.
-	LameDuckM
+	// ProxiedOperationsPerSecondM part of OperationsPerSecondM, for proxied operations.
+	ProxiedOperationsPerSecondM
+	// AverageProxiedConcurrentRequestsM part of AverageConcurrentRequestsM, for proxied requests.
+	AverageProxiedConcurrentRequestsM
 )
 
 var (
@@ -60,14 +64,18 @@ var (
 			averageConcurrentRequestsN,
 			"Number of requests currently being handled by this pod",
 			stats.UnitNone),
-		LameDuckM: stats.Float64(
-			lameDuckN,
-			"Indicates this Pod has received a shutdown signal with 1 else 0",
+		ProxiedOperationsPerSecondM: stats.Float64(
+			proxiedOperationsPerSecondN,
+			"Number of proxied operations per second",
+			stats.UnitNone),
+		AverageProxiedConcurrentRequestsM: stats.Float64(
+			averageProxiedConcurrentRequestsN,
+			"Number of proxied requests currently being handled by this pod",
 			stats.UnitNone),
 	}
 )
 
-// Reporter structure representing a prometheus expoerter.
+// Reporter structure represents a prometheus exporter.
 type Reporter struct {
 	Initialized     bool
 	ctx             context.Context
@@ -77,20 +85,19 @@ type Reporter struct {
 	podTagKey       tag.Key
 }
 
-// NewStatsReporter creates a reporter that collects and reports queue metrics
+// NewStatsReporter creates a reporter that collects and reports queue metrics.
 func NewStatsReporter(namespace string, config string, revision string, pod string) (*Reporter, error) {
-	var r = &Reporter{}
 	if len(namespace) < 1 {
-		return nil, errors.New("Namespace must not be empty")
+		return nil, errors.New("namespace must not be empty")
 	}
 	if len(config) < 1 {
-		return nil, errors.New("Config must not be empty")
+		return nil, errors.New("config must not be empty")
 	}
 	if len(revision) < 1 {
-		return nil, errors.New("Revision must not be empty")
+		return nil, errors.New("revision must not be empty")
 	}
 	if len(pod) < 1 {
-		return nil, errors.New("Pod must not be empty")
+		return nil, errors.New("pod must not be empty")
 	}
 
 	// Create the tag keys that will be used to add tags to our measurements.
@@ -98,22 +105,18 @@ func NewStatsReporter(namespace string, config string, revision string, pod stri
 	if err != nil {
 		return nil, err
 	}
-	r.namespaceTagKey = nsTag
 	configTag, err := tag.NewKey("destination_configuration")
 	if err != nil {
 		return nil, err
 	}
-	r.configTagKey = configTag
 	revTag, err := tag.NewKey("destination_revision")
 	if err != nil {
 		return nil, err
 	}
-	r.revisionTagKey = revTag
 	podTag, err := tag.NewKey("destination_pod")
 	if err != nil {
 		return nil, err
 	}
-	r.podTagKey = podTag
 
 	// Create views to see our measurements. This can return an error if
 	// a previously-registered view has the same name with a different value.
@@ -123,19 +126,25 @@ func NewStatsReporter(namespace string, config string, revision string, pod stri
 			Description: "Number of requests received since last Stat",
 			Measure:     measurements[OperationsPerSecondM],
 			Aggregation: view.LastValue(),
-			TagKeys:     []tag.Key{r.namespaceTagKey, r.configTagKey, r.revisionTagKey, r.podTagKey},
+			TagKeys:     []tag.Key{nsTag, configTag, revTag, podTag},
 		},
 		&view.View{
 			Description: "Number of requests currently being handled by this pod",
 			Measure:     measurements[AverageConcurrentRequestsM],
 			Aggregation: view.LastValue(),
-			TagKeys:     []tag.Key{r.namespaceTagKey, r.configTagKey, r.revisionTagKey, r.podTagKey},
+			TagKeys:     []tag.Key{nsTag, configTag, revTag, podTag},
 		},
 		&view.View{
-			Description: "Indicates this Pod has received a shutdown signal with 1 else 0",
-			Measure:     measurements[LameDuckM],
+			Description: "Number of proxied requests received since last Stat",
+			Measure:     measurements[ProxiedOperationsPerSecondM],
 			Aggregation: view.LastValue(),
-			TagKeys:     []tag.Key{r.namespaceTagKey, r.configTagKey, r.revisionTagKey, r.podTagKey},
+			TagKeys:     []tag.Key{nsTag, configTag, revTag, podTag},
+		},
+		&view.View{
+			Description: "Number of proxied requests currently being handled by this pod",
+			Measure:     measurements[AverageProxiedConcurrentRequestsM],
+			Aggregation: view.LastValue(),
+			TagKeys:     []tag.Key{nsTag, configTag, revTag, podTag},
 		},
 	)
 	if err != nil {
@@ -144,38 +153,41 @@ func NewStatsReporter(namespace string, config string, revision string, pod stri
 
 	ctx, err := tag.New(
 		context.Background(),
-		tag.Insert(r.namespaceTagKey, namespace),
-		tag.Insert(r.configTagKey, config),
-		tag.Insert(r.revisionTagKey, revision),
-		tag.Insert(r.podTagKey, pod),
+		tag.Insert(nsTag, namespace),
+		tag.Insert(configTag, config),
+		tag.Insert(revTag, revision),
+		tag.Insert(podTag, pod),
 	)
 	if err != nil {
 		return nil, err
 	}
-	r.ctx = ctx
-	r.Initialized = true
-	return r, nil
+	return &Reporter{
+		Initialized: true,
+
+		ctx:             ctx,
+		namespaceTagKey: nsTag,
+		configTagKey:    configTag,
+		revisionTagKey:  revTag,
+		podTagKey:       podTag,
+	}, nil
 }
 
-// Report captures request metrics
-func (r *Reporter) Report(lameDuck bool, operationsPerSecond float64, averageConcurrentRequests float64) error {
+// Report captures request metrics.
+func (r *Reporter) Report(stat *autoscaler.Stat) error {
 	if !r.Initialized {
-		return errors.New("StatsReporter is not Initialized yet")
+		return errors.New("statsReporter is not Initialized yet")
 	}
-	_lameDuck := float64(0)
-	if lameDuck {
-		_lameDuck = float64(1)
-	}
-	stats.Record(r.ctx, measurements[LameDuckM].M(_lameDuck))
-	stats.Record(r.ctx, measurements[OperationsPerSecondM].M(operationsPerSecond))
-	stats.Record(r.ctx, measurements[AverageConcurrentRequestsM].M(averageConcurrentRequests))
+	stats.Record(r.ctx, measurements[OperationsPerSecondM].M(float64(stat.RequestCount)))
+	stats.Record(r.ctx, measurements[AverageConcurrentRequestsM].M(stat.AverageConcurrentRequests))
+	stats.Record(r.ctx, measurements[ProxiedOperationsPerSecondM].M(float64(stat.ProxiedRequestCount)))
+	stats.Record(r.ctx, measurements[AverageProxiedConcurrentRequestsM].M(stat.AverageProxiedConcurrentRequests))
 	return nil
 }
 
-// UnregisterViews Unregister views
+// UnregisterViews Unregister views.
 func (r *Reporter) UnregisterViews() error {
-	if r.Initialized != true {
-		return errors.New("Reporter is not initialized")
+	if !r.Initialized {
+		return errors.New("reporter is not initialized")
 	}
 	var views []*view.View
 	if v := view.Find(operationsPerSecondN); v != nil {
@@ -184,7 +196,10 @@ func (r *Reporter) UnregisterViews() error {
 	if v := view.Find(averageConcurrentRequestsN); v != nil {
 		views = append(views, v)
 	}
-	if v := view.Find(lameDuckN); v != nil {
+	if v := view.Find(proxiedOperationsPerSecondN); v != nil {
+		views = append(views, v)
+	}
+	if v := view.Find(averageProxiedConcurrentRequestsN); v != nil {
 		views = append(views, v)
 	}
 	view.Unregister(views...)

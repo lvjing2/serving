@@ -21,42 +21,39 @@ limitations under the License.
 package performance
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
-	"github.com/knative/pkg/test/logging"
-	"github.com/knative/pkg/test/spoof"
+	ingress "github.com/knative/pkg/test/ingress"
 	"github.com/knative/serving/test"
+	"github.com/knative/test-infra/shared/junit"
 	"github.com/knative/test-infra/shared/loadgenerator"
 	"github.com/knative/test-infra/shared/testgrid"
 )
 
-func TestPerformanceLatency(t *testing.T) {
-	logger := logging.GetContextLogger("TestPerformanceLatency")
-
-	perfClients, err := Setup(context.Background(), logger, true)
+func TestTimeToServeLatency(t *testing.T) {
+	perfClients, err := Setup(t.Logf, true)
 	if err != nil {
 		t.Fatalf("Cannot initialize performance client: %v", err)
 	}
 
 	names := test.ResourceNames{
-		Service: test.AppendRandomString("helloworld", logger),
+		Service: test.ObjectNameForTest(t),
 		Image:   "helloworld",
 	}
 	clients := perfClients.E2EClients
 
-	defer TearDown(perfClients, logger, names)
-	test.CleanupOnInterrupt(func() { TearDown(perfClients, logger, names) }, logger)
+	defer TearDown(perfClients, names, t.Logf)
+	test.CleanupOnInterrupt(func() { TearDown(perfClients, names, t.Logf) })
 
-	logger.Info("Creating a new Service")
-	objs, err := test.CreateRunLatestServiceReady(logger, clients, &names, &test.Options{})
+	t.Log("Creating a new Service")
+	objs, err := test.CreateRunLatestServiceReady(t, clients, &names, &test.Options{})
 	if err != nil {
 		t.Fatalf("Failed to create Service: %v", err)
 	}
 
 	domain := objs.Route.Status.Domain
-	endpoint, err := spoof.GetServiceEndpoint(clients.KubeClient.Kube)
+	endpoint, err := ingress.GetIngressEndpoint(clients.KubeClient.Kube)
 	if err != nil {
 		t.Fatalf("Cannot get service endpoint: %v", err)
 	}
@@ -74,17 +71,17 @@ func TestPerformanceLatency(t *testing.T) {
 	}
 
 	// Save the json result for benchmarking
-	resp.SaveJSON("TestPerformanceLatency")
+	resp.SaveJSON(t.Name())
 
 	// Add latency metrics
-	var tc []testgrid.TestCase
+	var tc []junit.TestCase
 	for _, p := range resp.Result.DurationHistogram.Percentiles {
 		val := float32(p.Value) * 1000
 		name := fmt.Sprintf("p%d(sec)", int(p.Percentile))
-		tc = append(tc, CreatePerfTestCase(val, name, "TestPerformanceLatency"))
+		tc = append(tc, CreatePerfTestCase(val, name, t.Name()))
 	}
 
-	if err = testgrid.CreateTestgridXML(tc, "TestPerformanceLatency"); err != nil {
+	if err = testgrid.CreateXMLOutput(tc, t.Name()); err != nil {
 		t.Fatalf("Cannot create output xml: %v", err)
 	}
 }

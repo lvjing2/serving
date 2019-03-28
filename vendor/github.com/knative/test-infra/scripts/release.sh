@@ -31,18 +31,6 @@ function banner() {
     make_banner "@" "$1"
 }
 
-# Capitalize the first letter of each word.
-# Parameters: $1..$n - words to capitalize.
-function capitalize() {
-  local words=("$1")
-  local capitalized=()
-  for word in $@; do
-    local initial="$(echo ${word:0:1}| tr 'a-z' 'A-Z')"
-    capitalized+=("${initial}${word:1}")
-  done
-  echo "${capitalized[@]}"
-}
-
 # Tag images in the yaml files if $TAG is not empty.
 # $KO_DOCKER_REPO is the registry containing the images to tag with $TAG.
 # Parameters: $1..$n - yaml files to parse for images.
@@ -73,7 +61,7 @@ function publish_yamls() {
     gsutil cp $@ ${DEST}
   }
   # Before publishing the YAML files, cleanup the `latest` dir.
-  echo "Cleaning up the `latest` directory first"
+  echo "Cleaning up the 'latest' directory first"
   gsutil -m rm gs://${RELEASE_GCS_BUCKET}/latest/**
   verbose_gsutil_cp latest $@
   [[ -n ${TAG} ]] && verbose_gsutil_cp previous/${TAG} $@
@@ -81,6 +69,7 @@ function publish_yamls() {
 
 # These are global environment variables.
 SKIP_TESTS=0
+PRESUBMIT_TEST_FAIL_FAST=1
 TAG_RELEASE=0
 PUBLISH_RELEASE=0
 PUBLISH_TO_GITHUB=0
@@ -134,6 +123,44 @@ function setup_upstream() {
 function setup_branch() {
   [[ -z "${RELEASE_BRANCH}" ]] && return
   git fetch ${KNATIVE_UPSTREAM} ${RELEASE_BRANCH}:upstream/${RELEASE_BRANCH}
+}
+
+# Setup version, branch and release notes for a auto release.
+function prepare_auto_release() {
+  echo "Auto release requested"
+  TAG_RELEASE=1
+  PUBLISH_RELEASE=1
+
+  git fetch --all
+  local tags="$(git tag | cut -d 'v' -f2 | cut -d '.' -f1-2 | sort | uniq)"
+  local branches="$( { (git branch -r | grep upstream/release-) ; (git branch | grep release-); } | cut -d '-' -f2 | sort | uniq)"
+  RELEASE_VERSION=""
+
+  [[ -n "${tags}" ]] || abort "cannot obtain release tags for the repository"
+  [[ -n "${branches}" ]] || abort "cannot obtain release branches for the repository"
+
+  for i in $branches; do
+    RELEASE_NUMBER=$i
+    for j in $tags; do
+      if [[ "$i" == "$j" ]]; then
+        RELEASE_NUMBER=""
+      fi
+    done
+  done
+
+  if [ -z "$RELEASE_NUMBER" ]; then
+    echo "*** No new release will be generated, as no new branches exist"
+    exit  0
+  fi
+
+  RELEASE_VERSION="${RELEASE_NUMBER}.0"
+  RELEASE_BRANCH="release-${RELEASE_NUMBER}"
+  echo "Will create release ${RELEASE_VERSION} from branch ${RELEASE_BRANCH}"
+  # If --release-notes not used, add a placeholder
+  if [[ -z "${RELEASE_NOTES}" ]]; then
+    RELEASE_NOTES="$(mktemp)"
+    echo "[add release notes here]" > ${RELEASE_NOTES}
+  fi
 }
 
 # Setup version, branch and release notes for a "dot" release.
@@ -197,6 +224,7 @@ function parse_flags() {
   local has_gcr_flag=0
   local has_gcs_flag=0
   local is_dot_release=0
+  local is_auto_release=0
 
   cd ${REPO_ROOT_DIR}
   while [[ $# -ne 0 ]]; do
@@ -208,6 +236,7 @@ function parse_flags() {
       --publish) PUBLISH_RELEASE=1 ;;
       --nopublish) PUBLISH_RELEASE=0 ;;
       --dot-release) is_dot_release=1 ;;
+      --auto-release) is_auto_release=1 ;;
       *)
         [[ $# -ge 2 ]] || abort "missing parameter after $1"
         shift
@@ -243,6 +272,18 @@ function parse_flags() {
     esac
     shift
   done
+
+  # Do auto release unless release is forced
+  if (( is_auto_release )); then
+
+    (( is_dot_release )) && abort "cannot have both --dot-release and --auto-release set simultaneously"
+    [[ -n "${RELEASE_VERSION}" ]] &&  abort "cannot have both --version and --auto-release set simultaneously"
+    [[ -n "${RELEASE_BRANCH}" ]] &&  abort "cannot have both --branch and --auto-release set simultaneously"
+
+    setup_upstream
+    prepare_auto_release
+
+  fi
 
   # Setup dot releases
   if (( is_dot_release )); then
@@ -336,13 +377,22 @@ function main() {
 
   run_validation_tests ${VALIDATION_TESTS}
   banner "Building the release"
-  build_release || abort "error building the release"
+  build_release
+  # Do not use `||` above or any error will be swallowed.
+  if [[ $? -ne 0 ]]; then
+    abort "error building the release"
+  fi
   [[ -z "${YAMLS_TO_PUBLISH}" ]] && abort "no manifests were generated"
+  # Ensure no empty YAML file will be published.
+  for yaml in ${YAMLS_TO_PUBLISH}; do
+    [[ -s ${yaml} ]] || abort "YAML file ${yaml} is empty"
+  done
   echo "New release built successfully"
   if (( PUBLISH_RELEASE )); then
     tag_images_in_yamls ${YAMLS_TO_PUBLISH}
+    publish_yamls ${YAMLS_TO_PUBLISH}
     publish_to_github ${YAMLS_TO_PUBLISH}
-    echo "New release published successfully"
+    banner "New release published successfully"
   fi
 }
 
@@ -350,7 +400,7 @@ function main() {
 # Parameters: $1..$n - YAML files to add to the release.
 function publish_to_github() {
   (( PUBLISH_TO_GITHUB )) || return 0
-  local title="Knative $(capitalize ${REPO_NAME//-/ /}) release ${TAG}"
+  local title="${REPO_NAME_FORMATTED} release ${TAG}"
   local attachments=()
   local description="$(mktemp)"
   local attachments_dir="$(mktemp -d)"

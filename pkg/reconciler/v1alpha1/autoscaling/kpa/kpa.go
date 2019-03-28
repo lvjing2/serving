@@ -109,18 +109,11 @@ func NewController(
 	onlyKpaClass := reconciler.AnnotationFilterFunc(autoscaling.ClassAnnotationKey, autoscaling.KPA, true)
 	paInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: onlyKpaClass,
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    impl.Enqueue,
-			UpdateFunc: controller.PassNew(impl.Enqueue),
-			DeleteFunc: impl.Enqueue,
-		},
+		Handler:    reconciler.Handler(impl.Enqueue),
 	})
 
-	endpointsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    impl.EnqueueLabelOfNamespaceScopedResource("", autoscaling.KPALabelKey),
-		UpdateFunc: controller.PassNew(impl.EnqueueLabelOfNamespaceScopedResource("", autoscaling.KPALabelKey)),
-		DeleteFunc: impl.EnqueueLabelOfNamespaceScopedResource("", autoscaling.KPALabelKey),
-	})
+	endpointsInformer.Informer().AddEventHandler(
+		reconciler.Handler(impl.EnqueueLabelOfNamespaceScopedResource("", autoscaling.KPALabelKey)))
 
 	// Have the KPAMetrics enqueue the PAs whose metrics have changed.
 	kpaMetrics.Watch(impl.EnqueueKey)
@@ -163,10 +156,13 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 		// cache may be stale and we don't want to overwrite a prior update
 		// to status with this stale state.
 	} else if _, err := c.updateStatus(pa); err != nil {
-		logger.Warn("Failed to update kpa status", zap.Error(err))
+		logger.Warnw("Failed to update kpa status", zap.Error(err))
 		c.Recorder.Eventf(pa, corev1.EventTypeWarning, "UpdateFailed",
 			"Failed to update status for PA %q: %v", pa.Name, err)
 		return err
+	}
+	if err != nil {
+		c.Recorder.Event(pa, corev1.EventTypeWarning, "InternalError", err.Error())
 	}
 	return err
 }
@@ -174,11 +170,15 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 func (c *Reconciler) reconcile(ctx context.Context, pa *pav1alpha1.PodAutoscaler) error {
 	logger := logging.FromContext(ctx)
 
+	if pa.GetDeletionTimestamp() != nil {
+		return nil
+	}
+
 	// We may be reading a version of the object that was stored at an older version
 	// and may not have had all of the assumed defaults specified.  This won't result
 	// in this getting written back to the API Server, but lets downstream logic make
 	// assumptions about defaulting.
-	pa.SetDefaults()
+	pa.SetDefaults(ctx)
 
 	pa.Status.InitializeConditions()
 	logger.Debug("PA exists")
@@ -252,10 +252,10 @@ func (c *Reconciler) reconcile(ctx context.Context, pa *pav1alpha1.PodAutoscaler
 		return err
 	}
 
-	reporter.Report(autoscaler.ActualPodCountM, float64(got))
+	reporter.ReportActualPodCount(int64(got))
 	// negative "want" values represent an empty metrics pipeline and thus no specific request is being made
 	if want >= 0 {
-		reporter.Report(autoscaler.RequestedPodCountM, float64(want))
+		reporter.ReportRequestedPodCount(int64(want))
 	}
 
 	//switch {
@@ -270,6 +270,7 @@ func (c *Reconciler) reconcile(ctx context.Context, pa *pav1alpha1.PodAutoscaler
 	//	pa.Status.MarkActive()
 	//}
 
+	pa.Status.ObservedGeneration = pa.Generation
 	return nil
 }
 

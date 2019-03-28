@@ -19,12 +19,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	buildv1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
+	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
-	buildv1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
-	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 )
 
 var boolTrue = true
@@ -60,7 +59,6 @@ func TestBuilds(t *testing.T) {
 				Name:      "build",
 			},
 			Spec: v1alpha1.ConfigurationSpec{
-				DeprecatedGeneration: 31,
 				Build: &v1alpha1.RawExtension{BuildSpec: &buildv1alpha1.BuildSpec{
 					Steps: []corev1.Container{{
 						Image: "busybox",
@@ -79,8 +77,8 @@ func TestBuilds(t *testing.T) {
 			"apiVersion": "build.knative.dev/v1alpha1",
 			"kind":       "Build",
 			"metadata": map[string]interface{}{
-				"namespace": "simple",
-				"name":      "build-00031",
+				"namespace":    "simple",
+				"generateName": "build-",
 				"ownerReferences": []interface{}{map[string]interface{}{
 					"apiVersion":         v1alpha1.SchemeGroupVersion.String(),
 					"kind":               "Configuration",
@@ -90,7 +88,7 @@ func TestBuilds(t *testing.T) {
 					"blockOwnerDeletion": true,
 				}},
 				"labels": map[string]interface{}{
-					"serving.knative.dev/buildHash": "2ee4528bee48a78637ec374eb58cb1977b9611b85545f8b91884ff80b8d9472",
+					"serving.knative.dev/buildHash": "9f8c94db36e279e90614ea28d10da38587c36be4f5f01f78450df33c5eae417",
 				},
 				"creationTimestamp": nil,
 			},
@@ -100,11 +98,75 @@ func TestBuilds(t *testing.T) {
 					"image":     "busybox",
 					"resources": map[string]interface{}{},
 				}},
+				"Status": "",
 			},
 			"status": map[string]interface{}{
-				"startTime":      nil,
-				"completionTime": nil,
-				"stepStates":     nil,
+				"stepsCompleted": nil,
+			},
+		}),
+	}, {
+		// If a user specifies a build object with metadata.name set
+		// we 'ignore' and clear that value
+		name: "complex with a name",
+		configuration: &v1alpha1.Configuration{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "simple",
+				Name:      "build",
+			},
+			Spec: v1alpha1.ConfigurationSpec{
+				Build: &v1alpha1.RawExtension{
+					Object: &buildv1alpha1.Build{
+						TypeMeta: metav1.TypeMeta{
+							APIVersion: buildv1alpha1.SchemeGroupVersion.String(),
+							Kind:       "Build",
+						},
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: "simple",
+							Name:      "simple",
+						},
+						Spec: buildv1alpha1.BuildSpec{
+							Steps: []corev1.Container{{
+								Image: "busybox",
+							}},
+						},
+					}},
+				RevisionTemplate: v1alpha1.RevisionTemplateSpec{
+					Spec: v1alpha1.RevisionSpec{
+						Container: corev1.Container{
+							Image: "busybox",
+						},
+					},
+				},
+			},
+		},
+		want: UnstructuredWithContent(map[string]interface{}{
+			"apiVersion": "build.knative.dev/v1alpha1",
+			"kind":       "Build",
+			"metadata": map[string]interface{}{
+				"namespace":    "simple",
+				"generateName": "build-",
+				"ownerReferences": []interface{}{map[string]interface{}{
+					"apiVersion":         v1alpha1.SchemeGroupVersion.String(),
+					"kind":               "Configuration",
+					"name":               "build",
+					"uid":                "",
+					"controller":         true,
+					"blockOwnerDeletion": true,
+				}},
+				"labels": map[string]interface{}{
+					"serving.knative.dev/buildHash": "9745cf57f7dca85b845ccb7122d15952daee1db77dd06f7a60943b7f6465039",
+				},
+				"creationTimestamp": nil,
+			},
+			"spec": map[string]interface{}{
+				"steps": []interface{}{map[string]interface{}{
+					"name":      "",
+					"image":     "busybox",
+					"resources": map[string]interface{}{},
+				}},
+				"Status": "",
+			},
+			"status": map[string]interface{}{
 				"stepsCompleted": nil,
 			},
 		}),
@@ -116,7 +178,6 @@ func TestBuilds(t *testing.T) {
 				Name:      "build-template",
 			},
 			Spec: v1alpha1.ConfigurationSpec{
-				DeprecatedGeneration: 42,
 				Build: &v1alpha1.RawExtension{BuildSpec: &buildv1alpha1.BuildSpec{
 					Template: &buildv1alpha1.TemplateInstantiationSpec{
 						Name: "buildpacks",
@@ -139,8 +200,8 @@ func TestBuilds(t *testing.T) {
 			"apiVersion": "build.knative.dev/v1alpha1",
 			"kind":       "Build",
 			"metadata": map[string]interface{}{
-				"namespace": "simple",
-				"name":      "build-template-00042",
+				"namespace":    "simple",
+				"generateName": "build-template-",
 				"ownerReferences": []interface{}{map[string]interface{}{
 					"apiVersion":         v1alpha1.SchemeGroupVersion.String(),
 					"kind":               "Configuration",
@@ -150,7 +211,7 @@ func TestBuilds(t *testing.T) {
 					"blockOwnerDeletion": true,
 				}},
 				"labels": map[string]interface{}{
-					"serving.knative.dev/buildHash": "934e535117334c700c3a132e5e9dfc4276974cf2c9d6fe8f09c961f8e058933",
+					"serving.knative.dev/buildHash": "f547847100b5aab740cbaa1fc56b5d68c20200bcc935452d100ca6df2691610",
 				},
 				"creationTimestamp": nil,
 			},
@@ -162,11 +223,9 @@ func TestBuilds(t *testing.T) {
 						"value": "bar",
 					}},
 				},
+				"Status": "",
 			},
 			"status": map[string]interface{}{
-				"startTime":      nil,
-				"completionTime": nil,
-				"stepStates":     nil,
 				"stepsCompleted": nil,
 			},
 		}),

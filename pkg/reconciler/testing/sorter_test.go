@@ -58,7 +58,7 @@ func TestObjectSorter(t *testing.T) {
 func TestObjectSorterAddUnrecognizedType(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Errorf("AddObjects did not panic when receiving an unrecognized type ")
+			t.Error("AddObjects did not panic when receiving an unrecognized type ")
 		}
 	}()
 
@@ -71,7 +71,7 @@ func TestObjectSorterAddUnrecognizedType(t *testing.T) {
 func TestObjectSorterIndexerUnrecognizedType(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Errorf("IndexerForObjectType did not panic when receiving an unrecognized type ")
+			t.Error("IndexerForObjectType did not panic when receiving an unrecognized type ")
 		}
 	}()
 
@@ -104,7 +104,7 @@ func testSchemeSubset1() *runtime.Scheme {
 	return scheme
 }
 
-func testSchemeSubset2Func(scheme *runtime.Scheme) {
+func testSchemeSubset2Func(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(
 		schema.GroupVersion{
 			Group:   "test.group",
@@ -112,6 +112,7 @@ func testSchemeSubset2Func(scheme *runtime.Scheme) {
 		},
 		&testObject2{},
 	)
+	return nil
 }
 
 type testObject1 struct {

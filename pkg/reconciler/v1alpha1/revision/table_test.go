@@ -18,6 +18,7 @@ package revision
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	caching "github.com/knative/caching/pkg/apis/caching/v1alpha1"
@@ -26,8 +27,10 @@ import (
 	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/logging"
 	autoscalingv1alpha1 "github.com/knative/serving/pkg/apis/autoscaling/v1alpha1"
+	"github.com/knative/serving/pkg/apis/serving"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	"github.com/knative/serving/pkg/autoscaler"
+	"github.com/knative/serving/pkg/network"
 	"github.com/knative/serving/pkg/reconciler"
 	rtesting "github.com/knative/serving/pkg/reconciler/testing"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/revision/config"
@@ -52,6 +55,13 @@ func TestReconcile(t *testing.T) {
 		Name: "key not found",
 		// Make sure Reconcile handles good keys that don't exist.
 		Key: "foo/not-found",
+	}, {
+		Name: "nop deletion reconcile",
+		// Test that with a DeletionTimestamp we do nothing.
+		Objects: []runtime.Object{
+			rev("foo", "delete-pending", WithRevisionDeletionTimestamp),
+		},
+		Key: "foo/delete-pending",
 	}, {
 		Name: "first revision reconciliation",
 		// Test the simplest successful reconciliation flow.
@@ -125,6 +135,9 @@ func TestReconcile(t *testing.T) {
 				WithK8sServiceName, WithLogURL, WithInitRevConditions,
 				WithNoBuild, MarkDeploying("Deploying")),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", "inducing failure for create podautoscalers"),
+		},
 		Key: "foo/create-kpa-failure",
 	}, {
 		Name: "failure creating user deployment",
@@ -148,6 +161,9 @@ func TestReconcile(t *testing.T) {
 				WithLogURL, WithInitRevConditions,
 				WithNoBuild, MarkDeploying("Deploying")),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", "inducing failure for create deployments"),
+		},
 		Key: "foo/create-user-deploy-failure",
 	}, {
 		Name: "failure creating user service",
@@ -173,6 +189,9 @@ func TestReconcile(t *testing.T) {
 				WithK8sServiceName, WithLogURL, WithInitRevConditions,
 				WithNoBuild, MarkDeploying("Deploying")),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", "inducing failure for create services"),
+		},
 		Key: "foo/create-user-service-failure",
 	}, {
 		Name: "stable revision reconciliation",
@@ -224,6 +243,9 @@ func TestReconcile(t *testing.T) {
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: deploy("foo", "failure-update-deploy"),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", "inducing failure for update deployments"),
+		},
 		Key: "foo/failure-update-deploy",
 	}, {
 		Name: "deactivated revision is stable",
@@ -240,10 +262,6 @@ func TestReconcile(t *testing.T) {
 			endpoints("foo", "stable-deactivation", WithSubsets),
 			svc("foo", "stable-deactivation"),
 			image("foo", "stable-deactivation"),
-		},
-		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon endpoint %q becoming ready",
-				"stable-deactivation-service"),
 		},
 		Key: "foo/stable-deactivation",
 	}, {
@@ -318,8 +336,7 @@ func TestReconcile(t *testing.T) {
 				MarkRevisionReady),
 		}},
 		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon endpoint %q becoming ready",
-				"endpoint-ready-service"),
+			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon all resources being ready"),
 		},
 		Key: "foo/endpoint-ready",
 	}, {
@@ -342,10 +359,6 @@ func TestReconcile(t *testing.T) {
 				// state, we should see the following mutation.
 				MarkActivating("Something", "This is something longer")),
 		}},
-		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon endpoint %q becoming ready",
-				"kpa-not-ready-service"),
-		},
 		Key: "foo/kpa-not-ready",
 	}, {
 		Name: "kpa inactive",
@@ -367,10 +380,6 @@ func TestReconcile(t *testing.T) {
 				// is inactive, we should see the following change.
 				MarkInactive("NoTraffic", "This thing is inactive.")),
 		}},
-		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon endpoint %q becoming ready",
-				"kpa-inactive-service"),
-		},
 		Key: "foo/kpa-inactive",
 	}, {
 		Name: "mutated service gets fixed",
@@ -418,6 +427,9 @@ func TestReconcile(t *testing.T) {
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: svc("foo", "update-user-svc-failure"),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", "inducing failure for update services"),
+		},
 		Key: "foo/update-user-svc-failure",
 	}, {
 		Name: "surface deployment timeout",
@@ -486,6 +498,9 @@ func TestReconcile(t *testing.T) {
 				// we should see the following status changes.
 				WithLogURL, WithInitRevConditions),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", `builds.testing.build.knative.dev "the-build" not found`),
+		},
 		Key: "foo/missing-build",
 	}, {
 		Name: "build running",
@@ -595,19 +610,21 @@ func TestReconcile(t *testing.T) {
 		// Revision.  It then creates an Endpoints resource with active subsets.
 		// This signal should make our Reconcile mark the Revision as Ready.
 		Objects: []runtime.Object{
-			rev("foo", "steady-ready", WithK8sServiceName, WithLogURL,
-				// When the endpoint and KPA are ready, then we will see the
-				// Revision become ready.
-				MarkRevisionReady),
+			rev("foo", "steady-ready", WithK8sServiceName, WithLogURL),
 			kpa("foo", "steady-ready", WithTraffic),
 			deploy("foo", "steady-ready"),
 			svc("foo", "steady-ready"),
 			endpoints("foo", "steady-ready", WithSubsets),
 			image("foo", "steady-ready"),
 		},
+		WantStatusUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: rev("foo", "steady-ready", WithK8sServiceName, WithLogURL,
+				// All resources are ready to go, we should see the revision being
+				// marked ready
+				MarkRevisionReady),
+		}},
 		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon endpoint %q becoming ready",
-				"steady-ready-service"),
+			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon all resources being ready"),
 		},
 		Key: "foo/steady-ready",
 	}, {
@@ -628,6 +645,9 @@ func TestReconcile(t *testing.T) {
 				// When we're missing the OwnerRef for Service we see this update.
 				MarkResourceNotOwned("Service", "missing-owners-service")),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", `Revision: "missing-owners" does not own Service: "missing-owners-service"`),
+		},
 		Key: "foo/missing-owners",
 	}, {
 		Name:    "lost kpa owner ref",
@@ -647,10 +667,8 @@ func TestReconcile(t *testing.T) {
 				// When we're missing the OwnerRef for PodAutoscaler we see this update.
 				MarkResourceNotOwned("PodAutoscaler", "missing-owners")),
 		}},
-		// TODO(#2900): This should not fire, we're not ready!
 		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "RevisionReady", "Revision becomes ready upon endpoint %q becoming ready",
-				"missing-owners-service"),
+			Eventf(corev1.EventTypeWarning, "InternalError", `Revision: "missing-owners" does not own PodAutoscaler: "missing-owners"`),
 		},
 		Key: "foo/missing-owners",
 	}, {
@@ -671,9 +689,13 @@ func TestReconcile(t *testing.T) {
 				// When we're missing the OwnerRef for Deployment we see this update.
 				MarkResourceNotOwned("Deployment", "missing-owners-deployment")),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", `Revision: "missing-owners" does not own Deployment: "missing-owners-deployment"`),
+		},
 		Key: "foo/missing-owners",
 	}}
 
+	defer ClearAllLoggers()
 	table.Test(t, MakeFactory(func(listers *Listers, opt reconciler.Options) controller.Reconciler {
 		t := &rtesting.NullTracker{}
 		buildInformerFactory := KResourceTypedInformerFactory(opt)
@@ -743,6 +765,9 @@ func TestReconcileWithVarLogEnabled(t *testing.T) {
 				WithK8sServiceName, WithLogURL, WithInitRevConditions,
 				WithNoBuild, MarkDeploying("Deploying")),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", "inducing failure for create configmaps"),
+		},
 		Key: "foo/create-configmap-failure",
 	}, {
 		Name: "steady state after initial creation",
@@ -807,11 +832,16 @@ func TestReconcileWithVarLogEnabled(t *testing.T) {
 			// We should see a single update to the configmap we expect.
 			Object: fluentdConfigMap("foo", "update-configmap-failure", EnableVarLog),
 		}},
+		WantEvents: []string{
+			Eventf(corev1.EventTypeWarning, "InternalError", "inducing failure for update configmaps"),
+		},
 		Key: "foo/update-configmap-failure",
 	}}
 
 	config := ReconcilerTestConfig()
 	EnableVarLog(config)
+
+	defer ClearAllLoggers()
 
 	table.Test(t, MakeFactory(func(listers *Listers, opt reconciler.Options) controller.Reconciler {
 		return &Reconciler{
@@ -904,18 +934,30 @@ func AllUnknownConditions(r *v1alpha1.Revision) {
 
 type configOption func(*config.Config)
 
-func deploy(namespace, name string, co ...configOption) *appsv1.Deployment {
-	config := ReconcilerTestConfig()
-	for _, opt := range co {
-		opt(config)
+func deploy(namespace, name string, opts ...interface{}) *appsv1.Deployment {
+	cfg := ReconcilerTestConfig()
+
+	for _, opt := range opts {
+		if configOpt, ok := opt.(configOption); ok {
+			configOpt(cfg)
+		}
 	}
 
 	rev := rev(namespace, name)
+
+	for _, opt := range opts {
+		if revOpt, ok := opt.(RevisionOption); ok {
+			revOpt(rev)
+		}
+	}
+
 	// Do this here instead of in `rev` itself to ensure that we populate defaults
 	// before calling MakeDeployment within Reconcile.
-	rev.SetDefaults()
-	return resources.MakeDeployment(rev, config.Logging, config.Network, config.Observability,
-		config.Autoscaler, config.Controller)
+	rev.SetDefaults(context.Background())
+	return resources.MakeDeployment(rev, cfg.Logging, cfg.Network,
+		cfg.Observability, cfg.Autoscaler, cfg.Controller,
+	)
+
 }
 
 func image(namespace, name string, co ...configOption) *caching.Image {
@@ -927,7 +969,7 @@ func image(namespace, name string, co ...configOption) *caching.Image {
 	rev := rev(namespace, name)
 	// Do this here instead of in `rev` itself to ensure that we populate defaults
 	// before calling MakeDeployment within Reconcile.
-	rev.SetDefaults()
+	rev.SetDefaults(context.Background())
 	deploy := resources.MakeDeployment(rev, config.Logging, config.Network, config.Observability,
 		config.Autoscaler, config.Controller)
 	img, err := resources.MakeImageCache(rev, deploy)
@@ -1016,7 +1058,7 @@ var _ configStore = (*testConfigStore)(nil)
 func ReconcilerTestConfig() *config.Config {
 	return &config.Config{
 		Controller: getTestControllerConfig(),
-		Network:    &config.Network{IstioOutboundIPRanges: "*"},
+		Network:    &network.Config{IstioOutboundIPRanges: "*"},
 		Observability: &config.Observability{
 			LoggingURLTemplate: "http://logger.io/${REVISION_UID}",
 		},
@@ -1025,6 +1067,38 @@ func ReconcilerTestConfig() *config.Config {
 	}
 }
 
-func EnableVarLog(cfg *config.Config) {
+// this forces the type to be a 'configOption'
+var EnableVarLog configOption = func(cfg *config.Config) {
 	cfg.Observability.EnableVarLogCollection = true
+}
+
+// WithConfigurationGenerationLabel sets the label on the revision
+func WithConfigurationGenerationLabel(generation int) RevisionOption {
+	return func(r *v1alpha1.Revision) {
+		if r.Labels == nil {
+			r.Labels = make(map[string]string)
+		}
+		r.Labels[serving.ConfigurationGenerationLabelKey] = strconv.Itoa(generation)
+	}
+}
+
+// WithConfigurationGenerationLabel sets the label on the revision
+func WithConfigurationGenerationAnnotation(generation int) RevisionOption {
+	return func(r *v1alpha1.Revision) {
+		if r.Annotations == nil {
+			r.Annotations = make(map[string]string)
+		}
+		r.Annotations[serving.ConfigurationGenerationLabelKey] = strconv.Itoa(generation)
+	}
+}
+
+// WithDeprecatedConfigurationMetadataGenerationLabel sets the label on the revision
+func WithDeprecatedConfigurationMetadataGenerationLabel(generation int) RevisionOption {
+	return func(r *v1alpha1.Revision) {
+		if r.Labels == nil {
+			r.Labels = make(map[string]string)
+		}
+
+		r.Labels[serving.DeprecatedConfigurationMetadataGenerationLabelKey] = strconv.Itoa(generation)
+	}
 }

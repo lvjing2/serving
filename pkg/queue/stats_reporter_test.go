@@ -20,6 +20,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/knative/serving/pkg/autoscaler"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
 )
@@ -44,7 +45,7 @@ func TestNewStatsReporter_negative(t *testing.T) {
 		{
 			"Empty_Namespace_Value",
 			"Expected namespace empty error",
-			errors.New("Namespace must not be empty"),
+			errors.New("namespace must not be empty"),
 			"",
 			config,
 			revision,
@@ -53,7 +54,7 @@ func TestNewStatsReporter_negative(t *testing.T) {
 		{
 			"Empty_Config_Value",
 			"Expected config empty error",
-			errors.New("Config must not be empty"),
+			errors.New("config must not be empty"),
 			namespace,
 			"",
 			revision,
@@ -62,7 +63,7 @@ func TestNewStatsReporter_negative(t *testing.T) {
 		{
 			"Empty_Revision_Value",
 			"Expected revision empty error",
-			errors.New("Revision must not be empty"),
+			errors.New("revision must not be empty"),
 			namespace,
 			config,
 			"",
@@ -71,7 +72,7 @@ func TestNewStatsReporter_negative(t *testing.T) {
 		{
 			"Empty_Pod_Value",
 			"Expected pod empty error",
-			errors.New("Pod must not be empty"),
+			errors.New("pod must not be empty"),
 			namespace,
 			config,
 			revision,
@@ -102,7 +103,7 @@ func TestNewStatsReporter_doubledeclare(t *testing.T) {
 	}
 }
 
-func TestReporter_Report(t *testing.T) {
+func testReportWithProxiedRequests(t *testing.T, stat *autoscaler.Stat, reqCount, concurrency, proxiedCount, proxiedConcurrency float64) {
 	testTagKeyValueMap, err := createTestTagKeyValueMap()
 	if err != nil {
 		t.Errorf("Something went wrong with creating tag, '%v'.", err)
@@ -111,12 +112,13 @@ func TestReporter_Report(t *testing.T) {
 	if err != nil {
 		t.Errorf("Something went wrong with creating a reporter, '%v'.", err)
 	}
-	if err := reporter.Report(true, float64(39), float64(3)); err != nil {
+	if err := reporter.Report(stat); err != nil {
 		t.Error(err)
 	}
-	checkData(t, lameDuckN, 1, testTagKeyValueMap)
-	checkData(t, operationsPerSecondN, 39, testTagKeyValueMap)
-	checkData(t, averageConcurrentRequestsN, 3, testTagKeyValueMap)
+	checkData(t, operationsPerSecondN, reqCount, testTagKeyValueMap)
+	checkData(t, averageConcurrentRequestsN, concurrency, testTagKeyValueMap)
+	checkData(t, proxiedOperationsPerSecondN, proxiedCount, testTagKeyValueMap)
+	checkData(t, averageProxiedConcurrentRequestsN, proxiedConcurrency, testTagKeyValueMap)
 	if err := reporter.UnregisterViews(); err != nil {
 		t.Errorf("Error with unregistering views, %v", err)
 	}
@@ -126,6 +128,14 @@ func TestReporter_Report(t *testing.T) {
 	if err := reporter.UnregisterViews(); err == nil {
 		t.Errorf("Error with unregistering views, %v", err)
 	}
+}
+
+func TestReporter_ReportNoProxied(t *testing.T) {
+	testReportWithProxiedRequests(t, &autoscaler.Stat{RequestCount: 39, AverageConcurrentRequests: 3}, 39, 3, 0, 0)
+}
+
+func TestReporter_Report(t *testing.T) {
+	testReportWithProxiedRequests(t, &autoscaler.Stat{RequestCount: 39, AverageConcurrentRequests: 3, ProxiedRequestCount: 15, AverageProxiedConcurrentRequests: 2}, 39, 3, 15, 2)
 }
 
 func checkData(t *testing.T, measurementName string, wanted float64, wantedTagKeyValueMap map[tag.Key]string) {
@@ -139,7 +149,7 @@ func checkData(t *testing.T, measurementName string, wanted float64, wantedTagKe
 			t.Errorf("Wanted %v, Got %v", wantedTagKeyValueMap, v[0].Tags)
 		}
 		for _, got := range v[0].Tags {
-			if wanted, _ := wantedTagKeyValueMap[got.Key]; wanted != got.Value {
+			if wanted := wantedTagKeyValueMap[got.Key]; wanted != got.Value {
 				t.Errorf("Wanted %v, Got %v", wanted, got.Value)
 			}
 		}

@@ -129,6 +129,7 @@ func TestReconcile(t *testing.T) {
 		Key: "default/delete-label-failure",
 	}}
 
+	defer ClearAllLoggers()
 	table.Test(t, MakeFactory(func(listers *Listers, opt reconciler.Options) controller.Reconciler {
 		return &Reconciler{
 			Base:                reconciler.NewBase(opt, controllerAgentName),
@@ -146,7 +147,9 @@ func routeWithTraffic(namespace, name string, traffic ...v1alpha1.TrafficTarget)
 			Name:      name,
 		},
 		Status: v1alpha1.RouteStatus{
-			Traffic: traffic,
+			RouteStatusFields: v1alpha1.RouteStatusFields{
+				Traffic: traffic,
+			},
 		},
 	}
 }
@@ -214,6 +217,7 @@ func patchAddLabel(namespace, name, key, value, version string) clientgotesting.
 }
 
 func TestNew(t *testing.T) {
+	defer ClearAllLoggers()
 	kubeClient := fakekubeclientset.NewSimpleClientset()
 	servingClient := fakeclientset.NewSimpleClientset()
 	servingInformer := informers.NewSharedInformerFactory(servingClient, 0)
