@@ -48,7 +48,6 @@ func (c *Reconciler) createDeployment(ctx context.Context, rev *v1alpha1.Revisio
 }
 
 func (c *Reconciler) checkAndUpdateDeployment(ctx context.Context, rev *v1alpha1.Revision, have *appsv1.Deployment) (*appsv1.Deployment, error) {
-	logger := logging.FromContext(ctx)
 	cfgs := config.FromContext(ctx)
 
 	deployment := resources.MakeDeployment(
@@ -76,9 +75,18 @@ func (c *Reconciler) checkAndUpdateDeployment(ctx context.Context, rev *v1alpha1
 	desiredDeployment := have.DeepCopy()
 	desiredDeployment.Spec = deployment.Spec
 
-	// Carry over new labels.
+	// Carry over new labels and annotations.
 	for k, v := range deployment.Labels {
 		desiredDeployment.Labels[k] = v
+	}
+	for k, v := range deployment.Annotations {
+		desiredDeployment.Annotations[k] = v
+	}
+
+	if equality.Semantic.DeepEqual(desiredDeployment.Spec, have.Spec) &&
+		equality.Semantic.DeepEqual(desiredDeployment.Annotations, have.Annotations) &&
+		equality.Semantic.DeepEqual(desiredDeployment.Labels, have.Labels) {
+		return have, nil
 	}
 
 	d, err := c.KubeClientSet.AppsV1().Deployments(deployment.Namespace).Update(desiredDeployment)
@@ -86,18 +94,6 @@ func (c *Reconciler) checkAndUpdateDeployment(ctx context.Context, rev *v1alpha1
 		return nil, err
 	}
 
-	// If what comes back from the update (with defaults applied by the API server) is the same
-	// as what we have then nothing changed.
-	if equality.Semantic.DeepEqual(have.Spec, d.Spec) {
-		return d, nil
-	}
-	diff, err := kmp.SafeDiff(have.Spec, d.Spec)
-	if err != nil {
-		return nil, err
-	}
-
-	// If what comes back has a different spec, then signal the change.
-	logger.Infof("Reconciled deployment diff (-desired, +observed): %v", diff)
 	return d, nil
 }
 
@@ -114,6 +110,32 @@ func (c *Reconciler) createKPA(ctx context.Context, rev *v1alpha1.Revision) (*kp
 	kpa := resources.MakeKPA(rev)
 
 	return c.ServingClientSet.AutoscalingV1alpha1().PodAutoscalers(kpa.Namespace).Create(kpa)
+}
+
+func (c *Reconciler) checkAndUpdateKPA(ctx context.Context, rev *v1alpha1.Revision, have *kpav1alpha1.PodAutoscaler) (*kpav1alpha1.PodAutoscaler, changed, error) {
+	rawDesiredKPA := resources.MakeKPA(rev)
+
+	desiredKPA := have.DeepCopy()
+	desiredKPA.Spec = rawDesiredKPA.Spec
+	// Carry over new labels and annotations.
+	for k, v := range rawDesiredKPA.Annotations {
+		desiredKPA.Annotations[k] = v
+	}
+	for k, v := range rawDesiredKPA.Labels {
+		desiredKPA.Labels[k] = v
+	}
+
+	if equality.Semantic.DeepEqual(desiredKPA.Spec, have.Spec) &&
+		equality.Semantic.DeepEqual(desiredKPA.Annotations, have.Annotations) &&
+		equality.Semantic.DeepEqual(desiredKPA.Labels, have.Labels) {
+		return have, unchanged, nil
+	}
+
+	d, err := c.ServingClientSet.AutoscalingV1alpha1().PodAutoscalers(have.Namespace).Update(desiredKPA)
+	if err != nil {
+		return nil, unchanged, err
+	}
+	return d, wasChanged, err
 }
 
 type serviceFactory func(*v1alpha1.Revision) *corev1.Service
@@ -134,7 +156,17 @@ func (c *Reconciler) checkAndUpdateService(ctx context.Context, rev *v1alpha1.Re
 	desiredService.Spec.Selector = rawDesiredService.Spec.Selector
 	desiredService.Spec.Ports = rawDesiredService.Spec.Ports
 
-	if equality.Semantic.DeepEqual(desiredService.Spec, service.Spec) {
+	// Carry over new labels and annotations.
+	for k, v := range rawDesiredService.Annotations {
+		desiredService.Annotations[k] = v
+	}
+	for k, v := range rawDesiredService.Labels {
+		desiredService.Labels[k] = v
+	}
+
+	if equality.Semantic.DeepEqual(desiredService.Spec, service.Spec) &&
+		equality.Semantic.DeepEqual(desiredService.Annotations, service.Annotations) &&
+		equality.Semantic.DeepEqual(desiredService.Labels, service.Labels) {
 		return service, unchanged, nil
 	}
 	diff, err := kmp.SafeDiff(desiredService.Spec, service.Spec)
